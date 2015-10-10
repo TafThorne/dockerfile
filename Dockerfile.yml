@@ -1,0 +1,20 @@
+User: xpra
+
+Repositories:
+ - Name: xpra
+   Url : deb http://winswitch.org/ trusty main
+   Key : http://winswitch.org/gpg.asc
+   
+Install:
+ - xpra
+ 
+Env:
+ - DISPLAY: ":100"
+
+Daemon:
+ - Name: xpra
+   Command: xpra start $DISPLAY --bind-tcp=0.0.0.0:9999 --daemon=no
+   
+Expose:
+ - 9999
+
