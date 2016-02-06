@@ -24,9 +24,10 @@ class Dockerfile
   
   def initialize
 
-    @from       = "phusion/baseimage:0.9.17"
-    @maintainer = "Joe Ruether"    
+    @from       = "phusion/baseimage:0.9.18"
+    @maintainer = "Joe Ruether <jrruethe@gmail.com>"    
     @user       = "root"
+    @id         = `id -u`.chomp # 1000
     
     @requirements = Set.new
     @packages     = Set.new
@@ -51,6 +52,9 @@ class Dockerfile
     
     # Used to download deb files from the host  
     @ip_address = `ip route get 8.8.8.8 | awk '{print $NF; exit}'`.chomp
+
+    # Ip address of the docker interface
+    @docker_ip=`ifconfig docker0 | grep "inet addr"`.chomp.strip.split(/[ :]/)[2]
   end
   
   ##############################################################################
@@ -80,24 +84,25 @@ class Dockerfile
   # void (string)
   def set_user(user)
     @user = user
-    add_begin_command comment "Creating user / Adjusting user permissions"
-    add_begin_command "(groupadd -g 1000 #{user} || true)"
-    add_begin_command "((useradd -u 1000 -g 1000 -p #{user} -m #{user}) || \\" 
-    add_begin_command " (usermod -u 1000 #{user} && groupmod -g 1000 #{user}))"
-    add_begin_command blank
+    @begin_commands.push comment "Creating user / Adjusting user permissions"
+    @begin_commands.push "(groupadd -g #{@id} #{user} || true)"
+    @begin_commands.push "((useradd -u #{@id} -g #{@id} -p #{user} -m #{user}) || \\" 
+    @begin_commands.push " (usermod -u #{@id} #{user} && groupmod -g #{@id} #{user}))"
+    @begin_commands.push "chown -R #{user}:#{user} /home/#{user}"
+    @begin_commands.push blank
   end
   
   # void (string)
   def startup(text)
-    add_run_command comment "Defining startup script"
-    add_run_command "echo '#!/bin/sh -e' > /etc/rc.local"
-    add_run_command blank if text.strip.start_with? "#"
+    @run_commands.push comment "Defining startup script"
+    @run_commands.push "echo '#!/bin/sh -e' > /etc/rc.local"
+    @run_commands.push blank if text.strip.start_with? "#"
     text.strip.split("\n").each do |line|
       line.strip!
       if line.start_with? "#"
-        add_run_command comment line[1..-1].strip
+        @run_commands.push comment line[1..-1].strip
       elsif line.match /^\s*$/
-        add_run_command blank
+        @run_commands.push blank
       else
       
         # Escaping for the echo command
@@ -105,20 +110,48 @@ class Dockerfile
         line.gsub!("${", "\\${")
         line.gsub!("$(", "\\$(")
         
-        add_run_command "echo \"#{line}\" >> /etc/rc.local"
+        @run_commands.push "echo \"#{line}\" >> /etc/rc.local"
       end
     end
-    add_run_command blank
+    @run_commands.push blank
   end
   
   # void (string, string)
+  def add_cron(name, command)
+    @run_commands.push comment "Adding #{name} cronjob"
+    @run_commands.push "echo '#!/bin/sh -e' > /etc/cron.hourly/#{name}"
+    @run_commands.push "echo 'logger #{name}: $(' >> /etc/cron.hourly/#{name}"
+
+    command.strip.split("\n").each do |line|
+      line.strip!
+      if line.start_with? "#"
+        @run_commands.push comment line[1..-1].strip
+      elsif line.match /^\s*$/
+        @run_commands.push blank
+      else
+      
+        # Escaping for the echo command
+        line.gsub!("\"","\\\"")
+        line.gsub!("${", "\\${")
+        line.gsub!("$(", "\\$(")
+        
+        @run_commands.push "echo \"#{line};\" >> /etc/cron.hourly/#{name}"
+      end
+    end
+
+    @run_commands.push "echo ')' >> /etc/cron.hourly/#{name}"
+    @run_commands.push "chmod 755 /etc/cron.hourly/#{name}"
+    @run_commands.push blank
+  end
+
+  # void (string, string)
   def add_daemon(name, command)
-    add_run_command comment "Installing #{name} daemon"
-    add_run_command "mkdir -p /etc/service/#{name}"
-    add_run_command "echo '#!/bin/sh' > /etc/service/#{name}/run"
-    add_run_command "echo \"exec /sbin/setuser #{@user} #{command.gsub("\"","\\\"")}\" >> /etc/service/#{name}/run"
-    add_run_command "chmod 755 /etc/service/#{name}/run"
-    add_run_command blank
+    @run_commands.push comment "Installing #{name} daemon"
+    @run_commands.push "mkdir -p /etc/service/#{name}"
+    @run_commands.push "echo '#!/bin/sh' > /etc/service/#{name}/run"
+    @run_commands.push "echo \"exec /sbin/setuser #{@user} #{command.gsub("\"","\\\"")}\" >> /etc/service/#{name}/run"
+    @run_commands.push "chmod 755 /etc/service/#{name}/run"
+    @run_commands.push blank
   end
   
   # void (string, string)
@@ -138,44 +171,44 @@ class Dockerfile
   
   # void (string, string)
   def embed(source, destination = "/")
-    add_run_command comment "Embedding #{source}"
-    add_run_command "echo \\"
+    @run_commands.push comment "Embedding #{source}"
+    @run_commands.push "echo \\"
     
     s = Base64.encode64(File.open("#{source}", "rb").read)
     s.split("\n").each do |line|
-      add_run_command "#{line} \\"
+      @run_commands.push "#{line} \\"
     end
     
-    add_run_command "| tr -d ' ' | base64 -d > #{destination}"
-    add_run_command blank
+    @run_commands.push "| tr -d ' ' | base64 -d > #{destination}"
+    @run_commands.push blank
   end
   
   # void (string, string)
   def create(file, contents)
-    add_run_command comment "Creating #{file}"
-    add_run_command "echo \\"
+    @run_commands.push comment "Creating #{file}"
+    @run_commands.push "echo \\"
     
     s = Base64.encode64(contents)
     s.split("\n").each do |line|
-      add_run_command "#{line} \\"
+      @run_commands.push "#{line} \\"
     end
     
-    add_run_command "| tr -d ' ' | base64 -d > #{file}"
-    add_run_command blank
+    @run_commands.push "| tr -d ' ' | base64 -d > #{file}"
+    @run_commands.push blank
   end
   
   # void (string, string)
   def append(file, contents)
-    add_run_command comment "Appending to #{file}"
-    add_run_command "echo \\"
+    @run_commands.push comment "Appending to #{file}"
+    @run_commands.push "echo \\"
     
     s = Base64.encode64(contents)
     s.split("\n").each do |line|
-      add_run_command "#{line} \\"
+      @run_commands.push "#{line} \\"
     end
     
-    add_run_command "| tr -d ' ' | base64 -d >> #{file}"
-    add_run_command blank
+    @run_commands.push "| tr -d ' ' | base64 -d >> #{file}"
+    @run_commands.push blank
   end
   
   # void (int)
@@ -185,35 +218,35 @@ class Dockerfile
   
   # void (string, string, string)
   def add_repository(name, deb, key = nil)
-    add_pre_install_command comment "Adding #{name} repository"
+    @pre_install_commands.push comment "Adding #{name} repository"
     
     # If key is all hex
     if key =~ /^[0-9A-F]+$/i
       
       # Import the key using GPG
-      add_pre_install_command "gpg --keyserver keys.gnupg.net --recv #{key}"
-      add_pre_install_command "gpg --export #{key} | apt-key add -"
+      @pre_install_commands.push "gpg --keyserver keys.gnupg.net --recv #{key}"
+      @pre_install_commands.push "gpg --export #{key} | apt-key add -"
       @requirements.add "gnupg"
       
     elsif !key.nil?
       
       # Assume it is a url, download the key using wget
-      add_pre_install_command "wget -O - #{key} | apt-key add -"
+      @pre_install_commands.push "wget -O - #{key} | apt-key add -"
       @requirements.add "wget"
       @requirements.add "ssl-cert"
       
     end
 
-    add_pre_install_command "echo '#{deb}' >> /etc/apt/sources.list.d/#{name.downcase}.list"
-    add_pre_install_command blank
+    @pre_install_commands.push "echo '#{deb}' >> /etc/apt/sources.list.d/#{name.downcase}.list"
+    @pre_install_commands.push blank
 
   end
   
   # void (string, string)
   def add_ppa(name, ppa)
-    add_pre_install_command comment "Adding #{name} PPA"
-    add_pre_install_command "add-apt-repository -y #{ppa}"
-    add_pre_install_command blank
+    @pre_install_commands.push comment "Adding #{name} PPA"
+    @pre_install_commands.push "add-apt-repository -y #{ppa}"
+    @pre_install_commands.push blank
     
     @requirements.add "software-properties-common"
     @requirements.add "python-software-properties"
@@ -226,11 +259,11 @@ class Dockerfile
   
   # void (string)
   def install_deb(deb)
-    add_install_command comment "Installing deb package"
-    add_install_command "wget http://#{@ip_address}:8888/#{deb}"
-    add_install_command "(dpkg -i #{deb} || true)"
-    add_install_command blank
-    add_post_install_command "rm -f #{deb}"
+    @install_commands.push comment "Installing deb package"
+    @install_commands.push "wget http://#{@ip_address}:8888/#{deb}"
+    @install_commands.push "(dpkg -i #{deb} || true)"
+    @install_commands.push blank
+    @post_install_commands.push "rm -f #{deb}"
     
     @packages.add "wget"
     @deb_flag = true
@@ -241,22 +274,23 @@ class Dockerfile
     text.split("\n").each do |line|
       line.strip!
       if line.start_with? "#"
-        add_run_command comment line[1..-1].strip
+        @run_commands.push comment line[1..-1].strip
       elsif line.match /^\s*$/
-        add_run_command blank
+        @run_commands.push blank
       else
-        add_run_command line
+        @run_commands.push line
       end
     end
-    add_run_command blank 
+    @run_commands.push blank 
   end
   
   # void (string)
   def add_volume(volume)
-    add_end_command comment "Fixing permission errors for volume"
-    add_end_command "chown -R #{@user}:#{@user} #{volume}"
-    add_end_command "chmod -R 700 #{volume}"
-    add_end_command blank
+    @end_commands.push comment "Fixing permission errors for volume"
+    @end_commands.push "mkdir -p #{volume}"
+    @end_commands.push "chown -R #{@user}:#{@user} #{volume}"
+    @end_commands.push "chmod -R 700 #{volume}"
+    @end_commands.push blank
     
     @volumes.add volume
   end
@@ -307,11 +341,13 @@ class Dockerfile
     
     # Any packages that were requirements can be removed from the packages list
     @packages = @packages.difference @requirements
-      
-    lines += begin_commands
+
+    # Add beginning commands      
+    lines += @begin_commands
     
-      # If required packages were specified
+    # If required packages were specified
     if !@requirements.empty?
+
       # Update the package list
       lines.push comment "Updating Package List"
       lines.push "DEBIAN_FRONTEND=noninteractive apt-get update"
@@ -322,55 +358,59 @@ class Dockerfile
     end
     
     # Run pre-install commands
-    lines += pre_install_commands
+    lines += @pre_install_commands
         
-    # Add apt-cacher proxy
-    lines.push comment "Adding apt-cacher-ng proxy"
-    lines.push "echo 'Acquire::http { Proxy \"http://172.17.42.1:3142\"; };' > /etc/apt/apt.conf.d/01proxy"
-    lines.push blank
-    
-    # Update
-    lines.push comment "Updating Package List"
-    lines.push "DEBIAN_FRONTEND=noninteractive apt-get update"
-    lines.push blank
-    
-    # Install packages
-    lines += build_install_command @packages unless @packages.empty?
-    
-    # Run install commands
-    lines += install_commands
-    
-    # If manual deb packages were specified
-    if @deb_flag
-      # Resolve their dependencies
-      lines.push comment "Installing deb package dependencies"
-      lines.push "DEBIAN_FRONTEND=noninteractive apt-get -y -f install --no-install-recommends"
-      lines.push blank
+    # If packages are being installed 
+    if @deb_flag || !@packages.empty?
+
+       # Add apt-cacher proxy
+       # lines.push comment "Adding apt-cacher-ng proxy"
+       # lines.push "echo 'Acquire::http { Proxy \"http://#{@docker_ip}:3142\"; };' > /etc/apt/apt.conf.d/01proxy"
+       # lines.push blank
+
+       # Update
+       lines.push comment "Updating Package List"
+       lines.push "DEBIAN_FRONTEND=noninteractive apt-get update"
+       lines.push blank
+       
+       # Install packages
+       lines += build_install_command @packages unless @packages.empty?
+       
+       # Run install commands
+       lines += @install_commands
+       
+       # If manual deb packages were specified
+       if @deb_flag
+         # Resolve their dependencies
+         lines.push comment "Installing deb package dependencies"
+         lines.push "DEBIAN_FRONTEND=noninteractive apt-get -y -f install --no-install-recommends"
+         lines.push blank
+       end
+       
+       # Run post-install commands
+       if !@post_install_commands.empty?
+         lines.push comment "Removing temporary files"
+         lines += @post_install_commands
+         lines.push blank
+       end
+       
+       # Clean up
+       lines.push comment "Cleaning up after installation"
+       lines.push "DEBIAN_FRONTEND=noninteractive apt-get clean"
+       lines.push "rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*"
+       lines.push blank
+       
+       # Remove apt-cacher proxy
+       # lines.push comment "Removing apt-cacher-ng proxy"
+       # lines.push "rm -f /etc/apt/apt.conf.d/01proxy"
+       # lines.push blank
     end
-    
-    # Run post-install commands
-    if !@post_install_commands.empty?
-      lines.push comment "Removing temporary files"
-      lines += post_install_commands
-      lines.push blank
-    end
-    
-    # Clean up
-    lines.push comment "Cleaning up after installation"
-    lines.push "DEBIAN_FRONTEND=noninteractive apt-get clean"
-    lines.push "rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*"
-    lines.push blank
-    
-    # Remove apt-cacher proxy
-    # lines.push comment "Removing apt-cacher-ng proxy"
-    # lines.push "rm -f /etc/apt/apt.conf.d/01proxy"
-    # lines.push blank
-    
+
     # Run commands
-    lines += run_commands
+    lines += @run_commands
         
     # End commands
-    lines += end_commands
+    lines += @end_commands
     
     # Determine the longest line
     longest_length = lines.max_by(&:length).length
@@ -419,22 +459,6 @@ class Dockerfile
     lines.join "\n"
     
   end
-  
-  ##############################################################################
-
-  # Some metaprogramming to handle the various command lists
-  def self.handle(arg)
-    self.class_eval("def #{arg};@#{arg};end")
-    self.class_eval("def add_#{arg[0..-2]}(val);@#{arg}.push val;end")
-  end
-  
-  handle :begin_commands
-  handle :pre_install_commands
-  handle :install_commands
-  handle :post_install_commands
-  handle :run_commands
-  handle :end_commands
-    
 end
 
 ################################################################################
@@ -516,6 +540,11 @@ end if yaml.has_key? "Expose"
 yaml["Volumes"].each do |volume|
   dockerfile.add_volume volume
 end if yaml.has_key? "Volumes"
+
+# Parse Cron tag
+yaml["Cron"].each do |cron|
+   dockerfile.add_cron(cron["Name"], cron["Command"])
+end if yaml.has_key? "Cron"
 
 # Output Dockerfile
 puts dockerfile.finalize

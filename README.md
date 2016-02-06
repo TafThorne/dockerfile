@@ -188,6 +188,20 @@ Adds the commands to the `/etc/rc.local` file where they will run on startup. Tr
        
 Runs any number of daemons automatically, restarting them if they exit. For this to work, the command must NOT immediately exit (ie: it must block).
 
+## Cron
+
+    # Format
+    Cron:
+     - Name: name_of_cron
+       Command: command_to_run
+       
+    # Example
+    Cron:
+     - Name: Date
+       Command: date
+       
+Runs any number of cron jobs hourly, logging output to the system logger.
+
 # Examples:
 
 See Dockerfile.yml and it's generated Dockerfile in this repository for a description of an image that sets up GUI support, which could be used as a base for other images.
