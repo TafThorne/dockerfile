@@ -16,16 +16,80 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+require "pry"
 require "set"
 require "yaml"
 require "base64"
+
+# Patches
+class String
+
+   # string (void)
+   def flatten
+      self.gsub(/\s*\\\s*/, " ")
+   end
+
+   # string (void)
+   def escape
+      self.gsub("\"","\\\"").
+           gsub("${", "\\${").
+           gsub("$(", "\\$(")
+   end
+
+   # string (void)
+   def comment
+      "`\# #{self}`"
+   end
+
+   # string (string)
+   def echo_to(file)
+      "echo \"#{self.escape}\" >> #{file}"
+   end
+
+   # [string] (string)
+   def write_to(file)
+    lines = []
+    self.strip.split("\n").each do |line|
+      line.strip!
+      lines.push line.echo_to(file)
+    end
+    lines.align(" >> #{file}")
+   end
+
+end
+
+class Array
+
+  # [string] (int)
+  def indent(count)
+    self.collect do |l|
+      l.insert(0, " " * count)
+    end
+  end
+
+  # [string] (string)
+  def append(token)
+    self.collect do |l|
+      l.insert(-1, token)
+    end
+  end
+
+  # [string] (string)
+  def align(token)
+    longest_length = self.max_by{|s| s.index(token) || 0}.index(token)
+    self.collect!{|l| l.include?(token) ? l.sub(token, (" " * (longest_length - l.index(token)) + token)) : l}
+  end
+
+end
 
 class Dockerfile
   
   def initialize
 
     @from       = "phusion/baseimage:0.9.18"
-    @maintainer = "Joe Ruether <jrruethe@gmail.com>"    
+    @maintainer = "Joe Ruether <jrruethe@gmail.com>"
+    @name       = File.basename(Dir.pwd)
+    @network    = "bridge"
     @user       = "root"
     @id         = `id -u`.chomp # 1000
     
@@ -61,8 +125,9 @@ class Dockerfile
   public
   
   # string ()
-  def finalize
+  def to_s
     lines = []
+    lines.push "# #{@name} #{Time.now}"
     lines.push "FROM #{@from}"
     lines.push "MAINTAINER #{@maintainer}"
     lines.push ""
@@ -84,7 +149,7 @@ class Dockerfile
   # void (string)
   def set_user(user)
     @user = user
-    @begin_commands.push comment "Creating user / Adjusting user permissions"
+    @begin_commands.push "Creating user / Adjusting user permissions".comment
     @begin_commands.push "(groupadd -g #{@id} #{user} || true)"
     @begin_commands.push "((useradd -u #{@id} -g #{@id} -p #{user} -m #{user}) || \\" 
     @begin_commands.push " (usermod -u #{@id} #{user} && groupmod -g #{@id} #{user}))"
@@ -93,24 +158,23 @@ class Dockerfile
   end
   
   # void (string)
+  def set_name(name)
+    @name = name
+  end
+
+  # void (string)
   def startup(text)
-    @run_commands.push comment "Defining startup script"
+    @run_commands.push "Defining startup script".comment
     @run_commands.push "echo '#!/bin/sh -e' > /etc/rc.local"
     @run_commands.push blank if text.strip.start_with? "#"
     text.strip.split("\n").each do |line|
       line.strip!
       if line.start_with? "#"
-        @run_commands.push comment line[1..-1].strip
+        @run_commands.push line[1..-1].strip.comment
       elsif line.match /^\s*$/
         @run_commands.push blank
       else
-      
-        # Escaping for the echo command
-        line.gsub!("\"","\\\"")
-        line.gsub!("${", "\\${")
-        line.gsub!("$(", "\\$(")
-        
-        @run_commands.push "echo \"#{line}\" >> /etc/rc.local"
+        @run_commands.push line.echo_to("/etc/rc.local")
       end
     end
     @run_commands.push blank
@@ -118,24 +182,18 @@ class Dockerfile
   
   # void (string, string)
   def add_cron(name, command)
-    @run_commands.push comment "Adding #{name} cronjob"
+    @run_commands.push "Adding #{name} cronjob".comment
     @run_commands.push "echo '#!/bin/sh -e' > /etc/cron.hourly/#{name}"
     @run_commands.push "echo 'logger #{name}: $(' >> /etc/cron.hourly/#{name}"
 
     command.strip.split("\n").each do |line|
       line.strip!
       if line.start_with? "#"
-        @run_commands.push comment line[1..-1].strip
+        @run_commands.push line[1..-1].strip.comment
       elsif line.match /^\s*$/
         @run_commands.push blank
       else
-      
-        # Escaping for the echo command
-        line.gsub!("\"","\\\"")
-        line.gsub!("${", "\\${")
-        line.gsub!("$(", "\\$(")
-        
-        @run_commands.push "echo \"#{line};\" >> /etc/cron.hourly/#{name}"
+        @run_commands.push "echo \"#{line.escape};\" >> /etc/cron.hourly/#{name}"
       end
     end
 
@@ -146,10 +204,10 @@ class Dockerfile
 
   # void (string, string)
   def add_daemon(name, command)
-    @run_commands.push comment "Installing #{name} daemon"
+    @run_commands.push "Installing #{name} daemon".comment
     @run_commands.push "mkdir -p /etc/service/#{name}"
-    @run_commands.push "echo '#!/bin/sh' > /etc/service/#{name}/run"
-    @run_commands.push "echo \"exec /sbin/setuser #{@user} #{command.gsub("\"","\\\"")}\" >> /etc/service/#{name}/run"
+    @run_commands.push "#!/bin/sh".echo_to("/etc/service/#{name}/run")
+    @run_commands.push "exec /sbin/setuser #{@user} #{command.flatten}".echo_to("/etc/service/#{name}/run")
     @run_commands.push "chmod 755 /etc/service/#{name}/run"
     @run_commands.push blank
   end
@@ -171,7 +229,7 @@ class Dockerfile
   
   # void (string, string)
   def embed(source, destination = "/")
-    @run_commands.push comment "Embedding #{source}"
+    @run_commands.push "Embedding #{source}".comment
     @run_commands.push "echo \\"
     
     s = Base64.encode64(File.open("#{source}", "rb").read)
@@ -185,32 +243,13 @@ class Dockerfile
   
   # void (string, string)
   def create(file, contents)
-    @run_commands.push comment "Creating #{file}"
-    @run_commands.push "echo \\"
-    
-    s = Base64.encode64(contents)
-    s.split("\n").each do |line|
-      @run_commands.push "#{line} \\"
-    end
-    
-    @run_commands.push "| tr -d ' ' | base64 -d > #{file}"
+    @run_commands.push "Creating #{file}".comment
+    @run_commands.push "mkdir -p #{File.dirname(file)}"
+    @run_commands += contents.write_to(file)
+    @run_commands.push "chown #{@user}:#{@user} #{file}"
     @run_commands.push blank
   end
-  
-  # void (string, string)
-  def append(file, contents)
-    @run_commands.push comment "Appending to #{file}"
-    @run_commands.push "echo \\"
     
-    s = Base64.encode64(contents)
-    s.split("\n").each do |line|
-      @run_commands.push "#{line} \\"
-    end
-    
-    @run_commands.push "| tr -d ' ' | base64 -d >> #{file}"
-    @run_commands.push blank
-  end
-  
   # void (int)
   def expose(port)
     @ports.add port
@@ -218,7 +257,7 @@ class Dockerfile
   
   # void (string, string, string)
   def add_repository(name, deb, key = nil)
-    @pre_install_commands.push comment "Adding #{name} repository"
+    @pre_install_commands.push "Adding #{name} repository".comment
     
     # If key is all hex
     if key =~ /^[0-9A-F]+$/i
@@ -244,7 +283,7 @@ class Dockerfile
   
   # void (string, string)
   def add_ppa(name, ppa)
-    @pre_install_commands.push comment "Adding #{name} PPA"
+    @pre_install_commands.push "Adding #{name} PPA".comment
     @pre_install_commands.push "add-apt-repository -y #{ppa}"
     @pre_install_commands.push blank
     
@@ -259,7 +298,7 @@ class Dockerfile
   
   # void (string)
   def install_deb(deb)
-    @install_commands.push comment "Installing deb package"
+    @install_commands.push "Installing deb package".comment
     @install_commands.push "wget http://#{@ip_address}:8888/#{deb}"
     @install_commands.push "(dpkg -i #{deb} || true)"
     @install_commands.push blank
@@ -274,7 +313,7 @@ class Dockerfile
     text.split("\n").each do |line|
       line.strip!
       if line.start_with? "#"
-        @run_commands.push comment line[1..-1].strip
+        @run_commands.push line[1..-1].strip.comment
       elsif line.match /^\s*$/
         @run_commands.push blank
       else
@@ -286,7 +325,7 @@ class Dockerfile
   
   # void (string)
   def add_volume(volume)
-    @end_commands.push comment "Fixing permission errors for volume"
+    @end_commands.push "Fixing permission errors for volume".comment
     @end_commands.push "mkdir -p #{volume}"
     @end_commands.push "chown -R #{@user}:#{@user} #{volume}"
     @end_commands.push "chmod -R 700 #{volume}"
@@ -297,15 +336,14 @@ class Dockerfile
   
   ##############################################################################
   private
-  
-  # string (string)
-  def comment(string)
-    "`\# #{string}`"
-  end
-  
+    
   # string ()
   def blank
-    "\\"
+    " \\"
+  end
+
+  def backslash
+    " \\"
   end
     
   # [string] ([string])
@@ -315,7 +353,7 @@ class Dockerfile
     packages = packages.to_a
     
     # Specify the command
-    command = "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends"
+    command = "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
       
     # Make an array of paddings
     lines = [" " * command.length()] * packages.length
@@ -324,13 +362,13 @@ class Dockerfile
     lines[0] = command
     
     # Append the packages and backslashes to each line
-    lines = lines.zip(packages).collect{|l, p| l += " #{p} \\"}
+    lines = lines.zip(packages).collect{|l, p| l += (p + backslash)}
       
     # Convert the backslash on the last line to "&& \"
     lines[-1] = lines[-1][0..-2] + "&& \\"
     
     # Add comment and blank
-    lines.insert(0, comment("Installing packages"))
+    lines.insert(0, "Installing packages".comment)
     lines.push blank
   end
     
@@ -349,7 +387,7 @@ class Dockerfile
     if !@requirements.empty?
 
       # Update the package list
-      lines.push comment "Updating Package List"
+      lines.push "Updating Package List".comment
       lines.push "DEBIAN_FRONTEND=noninteractive apt-get update"
       lines.push blank
 
@@ -369,7 +407,7 @@ class Dockerfile
        # lines.push blank
 
        # Update
-       lines.push comment "Updating Package List"
+       lines.push "Updating Package List".comment
        lines.push "DEBIAN_FRONTEND=noninteractive apt-get update"
        lines.push blank
        
@@ -382,20 +420,20 @@ class Dockerfile
        # If manual deb packages were specified
        if @deb_flag
          # Resolve their dependencies
-         lines.push comment "Installing deb package dependencies"
+         lines.push "Installing deb package dependencies".comment
          lines.push "DEBIAN_FRONTEND=noninteractive apt-get -y -f install --no-install-recommends"
          lines.push blank
        end
        
        # Run post-install commands
        if !@post_install_commands.empty?
-         lines.push comment "Removing temporary files"
+         lines.push "Removing temporary files".comment
          lines += @post_install_commands
          lines.push blank
        end
        
        # Clean up
-       lines.push comment "Cleaning up after installation"
+       lines.push "Cleaning up after installation".comment
        lines.push "DEBIAN_FRONTEND=noninteractive apt-get clean"
        lines.push "rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*"
        lines.push blank
@@ -412,37 +450,22 @@ class Dockerfile
     # End commands
     lines += @end_commands
     
-    # Determine the longest line
-    longest_length = lines.max_by(&:length).length
-    
-    # For each line
-    lines.collect do |l|
-      
-      # Determine how many spaces needed to indent
-      length_to_extend = longest_length - l.length
-      
-      # Indent the line
-      length_to_extend += 1 if l.start_with? "`"
-      l.insert(0, " " * (l.start_with?("`") ? 4 : 5))
-      
-      # Add or Extend end markers 
-      if l.end_with? " && \\"
-        length_to_extend += 5
-        l.insert(-6, " " * length_to_extend)
-      elsif l.end_with? " \\"
-        length_to_extend += 5
-        l.insert(-3, " " * length_to_extend)
-      else
-        l.insert(-1, " " * length_to_extend)
-        l.insert(-1, " && \\")
-      end
-      
-    end
-    
+    # Indent lines
+    lines.indent(5)
+
+    # Unindent comments
+    lines.select{|l| l.include? " `#"}.collect{|l| l.sub!(" `#", "`#")}
+
+    # Add continuations
+    lines.reject{|l| l.end_with? "\\"}.append(" && \\")
+
+    # Align continuations
+    lines.align(" && \\").align("\\")
+
     # First line should start with "RUN"
     lines[0][0..2] = "RUN"
     
-    # Last line should not end with marker
+    # Last line should not end with continuation
     lines[-1].gsub! " && \\", ""
     lines[-1].gsub! " \\", ""
     
@@ -450,7 +473,7 @@ class Dockerfile
     if lines[-1].match /^\s*$/
       lines.delete_at -1
       
-      # Last line should not end with marker
+      # Last line should not end with continuation
       lines[-1].gsub! " && \\", ""
       lines[-1].gsub! " \\", ""
     end
@@ -464,11 +487,52 @@ end
 ################################################################################
 # Parse Dockerfile.yml
 
+class Build
+
+end
+
+class Run
+
+end
+
+class Coordinator
+
+end
+
+class Parser
+
+  def on(key, function)
+
+  end
+
+  def parse(yaml)
+
+
+
+  end
+
+end
+
+class Main
+
+  def initialize(argv)
+
+  end
+
+  def run
+
+  end
+
+end
+
 dockerfile = Dockerfile.new
 yaml = YAML::load_file("Dockerfile.yml")
 
 # Parse User tag
 dockerfile.set_user yaml["User"] if yaml.has_key? "User"
+
+# Parse Name tag
+dockerfile.set_name yaml["Name"] if yaml.has_key? "Name"
 
 # Parse Startup tag
 dockerfile.startup yaml["Startup"] if yaml.has_key? "Startup"
@@ -531,15 +595,25 @@ yaml["Embed"].each do |i|
   end
 end if yaml.has_key? "Embed"
 
+# Parse Create tag
+yaml["Create"].each do |i| 
+  dockerfile.create i["File"], i["Contents"]
+end if yaml.has_key? "Create"
+
 # Parse Expose tag
 yaml["Expose"].each do |port|
   dockerfile.expose port
 end if yaml.has_key? "Expose"
 
-# Parse Volumes tag
-yaml["Volumes"].each do |volume|
+# Parse Volume tag
+yaml["Volume"].each do |volume|
   dockerfile.add_volume volume
-end if yaml.has_key? "Volumes"
+end if yaml.has_key? "Volume"
+
+# Parse Network tag
+yaml["Network"].each do |network|
+  dockerfile.add_network network
+end if yaml.has_key? "Network"
 
 # Parse Cron tag
 yaml["Cron"].each do |cron|
@@ -547,4 +621,9 @@ yaml["Cron"].each do |cron|
 end if yaml.has_key? "Cron"
 
 # Output Dockerfile
-puts dockerfile.finalize
+puts dockerfile.to_s
+
+if __FILE__ == $0
+  main = Main.new(ARGV)
+  main.run
+end

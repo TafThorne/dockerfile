@@ -225,8 +225,5 @@ Will automatically add all the commands needed to connect a GUI
 ## SSH
 Will automatically add specified ssh keys and set up the ssh daemon
     
-## Cron
-Will schedule the specified command / script to be run using cron, logging the output to the /var/log/messages using the syslog-ng logger
-    
 ## From
 Ability to change the "from" image, as long as the "from" image is derived from `phusion/baseimage-docker`
