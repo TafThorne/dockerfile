@@ -506,7 +506,22 @@ class Ignore
 
 end
 
-class Coordinator
+class Manager
+
+  def initialize
+    @dockerfile = Dockerfile.new
+    @build      = Build.new
+    @run        = Run.new
+    @ignore     = Ignore.new
+  end
+
+  def method_missing(method, *args, &block)
+    self.instance_variables.each{|v| self.instance_variable_get(v).send(method, *args, &block) if self.instance_variable_get(v).respond_to? method}
+  end
+
+  def to_s
+    @dockerfile.to_s
+  end
 
 end
 
@@ -524,9 +539,6 @@ class Parser
   
     # See if the yaml file contains the command
     if @yaml.has_key? name
-
-      # Make sure the command is supported
-      throw "Unknown command: #{name}" unless @recipient.respond_to? name
 
       # Grab the node
       node = @yaml[name]
@@ -582,10 +594,10 @@ class Main
 
   def run
     yaml = YAML::load_file("Dockerfile.yml").downcase
-    dockerfile = Dockerfile.new
-    parser = Parser.new(yaml, dockerfile)
+    manager = Manager.new
+    parser = Parser.new(yaml, manager)
     @commands.each{|command| parser.parse(command)}
-    puts dockerfile.to_s
+    puts manager.to_s
   end
 
 end
