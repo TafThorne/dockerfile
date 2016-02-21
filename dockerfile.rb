@@ -26,7 +26,7 @@ class String
 
    # string (void)
    def flatten
-      self.gsub(/\s*\\\s*/, " ")
+      self.strip.gsub(/\s*\\\s*/, " ")
    end
 
    # string (void)
@@ -74,10 +74,33 @@ class Array
     end
   end
 
-  # [string] (string)
-  def align(token)
-    longest_length = self.max_by{|s| s.index(token) || 0}.index(token)
-    self.collect!{|l| l.include?(token) ? l.sub(token, (" " * (longest_length - l.index(token)) + token)) : l}
+  # [string] (string | regexp)
+  def align(match)
+    longest_length = self.max_by{|s| s.index(match) || 0}.index(match)
+    self.collect! do |l| 
+      index = l.index(match)
+      unless index.nil?
+        l.insert(index, " " * (longest_length - index))
+      else
+        l
+      end
+    end unless longest_length.nil?
+    self
+  end
+
+end
+
+class Hash
+
+  def downcase
+    self.keys.each do |key|
+      new_key = key.to_s.downcase
+      self[new_key] = self.delete(key)
+      if self[new_key].is_a? Hash
+        self[new_key].downcase
+      end
+    end
+    self
   end
 
 end
@@ -95,6 +118,7 @@ class Dockerfile
     
     @requirements = Set.new
     @packages     = Set.new
+    @depends      = Set.new
     @envs         = Set.new
     @ports        = Set.new
     @volumes      = Set.new
@@ -147,7 +171,7 @@ class Dockerfile
   end
   
   # void (string)
-  def set_user(user)
+  def user(user)
     @user = user
     @begin_commands.push "Creating user / Adjusting user permissions".comment
     @begin_commands.push "(groupadd -g #{@id} #{user} || true)"
@@ -158,7 +182,7 @@ class Dockerfile
   end
   
   # void (string)
-  def set_name(name)
+  def name(name)
     @name = name
   end
 
@@ -181,7 +205,7 @@ class Dockerfile
   end
   
   # void (string, string)
-  def add_cron(name, command)
+  def cron(name, command)
     @run_commands.push "Adding #{name} cronjob".comment
     @run_commands.push "echo '#!/bin/sh -e' > /etc/cron.hourly/#{name}"
     @run_commands.push "echo 'logger #{name}: $(' >> /etc/cron.hourly/#{name}"
@@ -203,7 +227,7 @@ class Dockerfile
   end
 
   # void (string, string)
-  def add_daemon(name, command)
+  def daemon(name, command)
     @run_commands.push "Installing #{name} daemon".comment
     @run_commands.push "mkdir -p /etc/service/#{name}"
     @run_commands.push "#!/bin/sh".echo_to("/etc/service/#{name}/run")
@@ -213,7 +237,7 @@ class Dockerfile
   end
   
   # void (string, string)
-  def add_env(key, value)
+  def env(key, value)
     @envs.add [key, value]
   end
   
@@ -221,12 +245,7 @@ class Dockerfile
   def add(source, destination = "/")
     @adds.push "ADD #{source} #{destination}"
   end
-  
-  # void (string, string)
-  def configure(source, destination = "/")
-    @configures.push "ADD #{source} #{destination}"
-  end
-  
+    
   # void (string, string)
   def embed(source, destination = "/")
     @run_commands.push "Embedding #{source}".comment
@@ -256,33 +275,32 @@ class Dockerfile
   end
   
   # void (string, string, string)
-  def add_repository(name, deb, key = nil)
+  def repository(name, deb)
     @pre_install_commands.push "Adding #{name} repository".comment
-    
+    @pre_install_commands.push "echo '#{deb}' >> /etc/apt/sources.list.d/#{name.downcase}.list"
+    @pre_install_commands.push blank
+  end
+  
+  # void (string)
+  def key(key)
+    @pre_install_commands.push "Adding #{key} to keychain".comment
     # If key is all hex
     if key =~ /^[0-9A-F]+$/i
-      
       # Import the key using GPG
       @pre_install_commands.push "gpg --keyserver keys.gnupg.net --recv #{key}"
       @pre_install_commands.push "gpg --export #{key} | apt-key add -"
       @requirements.add "gnupg"
-      
     elsif !key.nil?
-      
       # Assume it is a url, download the key using wget
       @pre_install_commands.push "wget -O - #{key} | apt-key add -"
       @requirements.add "wget"
       @requirements.add "ssl-cert"
-      
     end
-
-    @pre_install_commands.push "echo '#{deb}' >> /etc/apt/sources.list.d/#{name.downcase}.list"
     @pre_install_commands.push blank
-
   end
-  
+
   # void (string, string)
-  def add_ppa(name, ppa)
+  def ppa(name, ppa)
     @pre_install_commands.push "Adding #{name} PPA".comment
     @pre_install_commands.push "add-apt-repository -y #{ppa}"
     @pre_install_commands.push blank
@@ -292,12 +310,17 @@ class Dockerfile
   end
   
   # void (string)
-  def install_package(package)
+  def install(package)
     @packages.add package
   end
   
   # void (string)
-  def install_deb(deb)
+  def depend(package)
+    @depends.add package
+  end
+
+  # void (string)
+  def deb(deb)
     @install_commands.push "Installing deb package".comment
     @install_commands.push "wget http://#{@ip_address}:8888/#{deb}"
     @install_commands.push "(dpkg -i #{deb} || true)"
@@ -324,7 +347,7 @@ class Dockerfile
   end
   
   # void (string)
-  def add_volume(volume)
+  def volume(volume)
     @end_commands.push "Fixing permission errors for volume".comment
     @end_commands.push "mkdir -p #{volume}"
     @end_commands.push "chown -R #{@user}:#{@user} #{volume}"
@@ -348,28 +371,13 @@ class Dockerfile
     
   # [string] ([string])
   def build_install_command(packages)
-    
-    # Convert the set to an array
-    packages = packages.to_a
-    
-    # Specify the command
-    command = "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
-      
-    # Make an array of paddings
-    lines = [" " * command.length()] * packages.length
-      
-    # Overwrite the first line with the command
-    lines[0] = command
-    
-    # Append the packages and backslashes to each line
-    lines = lines.zip(packages).collect{|l, p| l += (p + backslash)}
-      
-    # Convert the backslash on the last line to "&& \"
-    lines[-1] = lines[-1][0..-2] + "&& \\"
-    
-    # Add comment and blank
-    lines.insert(0, "Installing packages".comment)
-    lines.push blank
+    lines = []
+    unless packages.empty?
+      lines.push "Installing packages".comment
+      lines.push "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\"
+      packages.sort.each{|p| lines.push(p + backslash)}
+      lines.push blank
+    end
   end
     
   # string ()
@@ -399,12 +407,7 @@ class Dockerfile
     lines += @pre_install_commands
         
     # If packages are being installed 
-    if @deb_flag || !@packages.empty?
-
-       # Add apt-cacher proxy
-       # lines.push comment "Adding apt-cacher-ng proxy"
-       # lines.push "echo 'Acquire::http { Proxy \"http://#{@docker_ip}:3142\"; };' > /etc/apt/apt.conf.d/01proxy"
-       # lines.push blank
+    if @deb_flag || !@packages.empty? || !@depends.empty?
 
        # Update
        lines.push "Updating Package List".comment
@@ -412,7 +415,7 @@ class Dockerfile
        lines.push blank
        
        # Install packages
-       lines += build_install_command @packages unless @packages.empty?
+       lines += build_install_command (@packages + @depends)
        
        # Run install commands
        lines += @install_commands
@@ -421,7 +424,7 @@ class Dockerfile
        if @deb_flag
          # Resolve their dependencies
          lines.push "Installing deb package dependencies".comment
-         lines.push "DEBIAN_FRONTEND=noninteractive apt-get -y -f install --no-install-recommends"
+         lines.push "DEBIAN_FRONTEND=noninteractive apt-get install -y -f --no-install-recommends"
          lines.push blank
        end
        
@@ -437,16 +440,20 @@ class Dockerfile
        lines.push "DEBIAN_FRONTEND=noninteractive apt-get clean"
        lines.push "rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*"
        lines.push blank
-       
-       # Remove apt-cacher proxy
-       # lines.push comment "Removing apt-cacher-ng proxy"
-       # lines.push "rm -f /etc/apt/apt.conf.d/01proxy"
-       # lines.push blank
+
     end
 
     # Run commands
     lines += @run_commands
         
+    # Remove dependencies
+    unless @depends.empty?
+      lines.push "Removing build dependencies".comment
+      lines.push "DEBIAN_FRONTEND=noninteractive apt-get purge -y \\"
+      @depends.sort.each{|p| lines.push(p + backslash)}
+      lines.push blank
+    end
+
     # End commands
     lines += @end_commands
     
@@ -460,7 +467,7 @@ class Dockerfile
     lines.reject{|l| l.end_with? "\\"}.append(" && \\")
 
     # Align continuations
-    lines.align(" && \\").align("\\")
+    lines.align(" && \\").align(/\\$/)
 
     # First line should start with "RUN"
     lines[0][0..2] = "RUN"
@@ -495,133 +502,93 @@ class Run
 
 end
 
+class Ignore
+
+end
+
 class Coordinator
 
 end
 
 class Parser
 
-  def on(key, function)
-
+  def initialize(yaml, recipient)
+    @yaml = yaml
+    @recipient = recipient
   end
 
-  def parse(yaml)
+  def parse(name)
 
+    # Work with lowercase names
+    name.downcase!
+  
+    # See if the yaml file contains the command
+    if @yaml.has_key? name
 
+      # Make sure the command is supported
+      throw "Unknown command: #{name}" unless @recipient.respond_to? name
 
+      # Grab the node
+      node = @yaml[name]
+
+      # Call the recipient depending on the format of the node
+      case node
+        when String then @recipient.send(name, node)
+        when Fixnum then @recipient.send(name, node)
+        when Hash   then @recipient.send(name, node.first[0], node.first[1])
+        when Array
+          node.each do |item|
+            case item
+              when String then @recipient.send(name, item)
+              when Fixnum then @recipient.send(name, item)
+              when Hash   then @recipient.send(name, item.first[0], item.first[1])
+              else throw "Unknown format for #{name}"
+            end
+          end
+        else throw "Unknown format for #{name}"
+      end
+    end
   end
-
 end
 
 class Main
 
   def initialize(argv)
 
+    @commands = 
+    [
+     "name",
+     "user",
+     "env",     
+     "add",
+     "create",
+     "embed",
+     "repository",
+     "ppa",
+     "key",
+     "install",
+     "depend",
+     "deb",
+     "run",
+     "startup",
+     "daemon",
+     "cron",
+     "expose",
+     "volume",
+     "network"
+    ]
+
   end
 
   def run
-
+    yaml = YAML::load_file("Dockerfile.yml").downcase
+    dockerfile = Dockerfile.new
+    parser = Parser.new(yaml, dockerfile)
+    @commands.each{|command| parser.parse(command)}
+    puts dockerfile.to_s
   end
 
 end
-
-dockerfile = Dockerfile.new
-yaml = YAML::load_file("Dockerfile.yml")
-
-# Parse User tag
-dockerfile.set_user yaml["User"] if yaml.has_key? "User"
-
-# Parse Name tag
-dockerfile.set_name yaml["Name"] if yaml.has_key? "Name"
-
-# Parse Startup tag
-dockerfile.startup yaml["Startup"] if yaml.has_key? "Startup"
-
-# Parse Env tag
-yaml["Env"].each do |e|
-  dockerfile.add_env(e.first[0], e.first[1])
-end if yaml.has_key? "Env"
-    
-# Parse Daemon tag
-yaml["Daemon"].each do |d|
-  dockerfile.add_daemon(d["Name"], d["Command"])
-end if yaml.has_key? "Daemon"
-  
-# Parse Add tag
-yaml["Add"].each do |i| 
-  if i.is_a? Hash
-    dockerfile.add i.first[0], i.first[1]
-  else
-    dockerfile.add i
-  end
-end if yaml.has_key? "Add"
-
-# Parse Repositories tag
-yaml["Repositories"].each do |r|
-  if r["Url"].start_with? "deb "
-    dockerfile.add_repository(r["Name"], r["Url"], r["Key"])
-  elsif r["Url"].start_with? "ppa:"
-    dockerfile.add_ppa(r["Name"], r["Url"])
-  end
-end if yaml.has_key? "Repositories"
-
-# Parse Install tag
-yaml["Install"].each do |package|
-  if package.end_with? ".deb"
-    dockerfile.install_deb package
-  else
-    dockerfile.install_package package
-  end
-end if yaml.has_key? "Install"
-
-# Parse Run tag
-dockerfile.run yaml["Run"] if yaml.has_key? "Run"
-
-# Parse Configure tag
-yaml["Configure"].each do |i| 
-  if i.is_a? Hash
-    dockerfile.configure i.first[0], i.first[1]
-  else
-    dockerfile.configure i
-  end
-end if yaml.has_key? "Configure"
-
-# Parse Embed tag
-yaml["Embed"].each do |i| 
-  if i.is_a? Hash
-    dockerfile.embed i.first[0], i.first[1]
-  else
-    dockerfile.embed i
-  end
-end if yaml.has_key? "Embed"
-
-# Parse Create tag
-yaml["Create"].each do |i| 
-  dockerfile.create i["File"], i["Contents"]
-end if yaml.has_key? "Create"
-
-# Parse Expose tag
-yaml["Expose"].each do |port|
-  dockerfile.expose port
-end if yaml.has_key? "Expose"
-
-# Parse Volume tag
-yaml["Volume"].each do |volume|
-  dockerfile.add_volume volume
-end if yaml.has_key? "Volume"
-
-# Parse Network tag
-yaml["Network"].each do |network|
-  dockerfile.add_network network
-end if yaml.has_key? "Network"
-
-# Parse Cron tag
-yaml["Cron"].each do |cron|
-   dockerfile.add_cron(cron["Name"], cron["Command"])
-end if yaml.has_key? "Cron"
-
-# Output Dockerfile
-puts dockerfile.to_s
 
 if __FILE__ == $0
   main = Main.new(ARGV)
