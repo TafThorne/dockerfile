@@ -1,9 +1,11 @@
+Name: xpra
 User: xpra
 
 Repositories:
- - Name: xpra
-   Url : deb http://winswitch.org/ trusty main
-   Key : http://winswitch.org/gpg.asc
+ - xpra : deb http://winswitch.org/ trusty main
+
+Keys:
+ - http://winswitch.org/gpg.asc
    
 Install:
  - xpra
@@ -11,10 +13,50 @@ Install:
 Env:
  - DISPLAY: ":100"
 
-Daemon:
- - Name: xpra
-   Command: xpra start $DISPLAY --bind-tcp=0.0.0.0:9999 --daemon=no
+Daemons:
+ - xpra : xpra start $DISPLAY --bind-tcp=0.0.0.0:9999 --daemon=no
    
 Expose:
  - 9999
 
+################################################################################
+
+Startup: echo "Hello World!"
+
+Add:
+ - file
+ - file : /path/to/destination
+
+PPA:
+ - bitcoin : ppa:bitcoin
+
+Run: |
+ echo Line One
+ echo Line Two
+
+ # Comment
+ echo Line Three
+
+Configure:
+ - file : /overwrite/this/file
+
+Embed:
+ - embedme.txt
+ - writeme.txt : here.txt
+
+Create:
+ - /path/to/somefile.txt : |
+    This is the contents of the file
+    Hopefully this works for parsing
+
+Volumes:
+ - /etc
+ - /opt
+
+Networks:
+ - bridge
+ - test
+
+Cron:
+ - date : date
+ - time : time

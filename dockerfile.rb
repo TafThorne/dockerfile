@@ -56,6 +56,11 @@ class String
     lines.align(" >> #{file}")
    end
 
+   # string (string)
+   def run_as(name)
+     "/sbin/setuser #{name} #{self}"
+   end
+
 end
 
 class Array
@@ -177,7 +182,8 @@ class Dockerfile
     @begin_commands.push "(groupadd -g #{@id} #{user} || true)"
     @begin_commands.push "((useradd -u #{@id} -g #{@id} -p #{user} -m #{user}) || \\" 
     @begin_commands.push " (usermod -u #{@id} #{user} && groupmod -g #{@id} #{user}))"
-    @begin_commands.push "chown -R #{user}:#{user} /home/#{user}"
+    @begin_commands.push "mkdir -p /home/#{user}"
+    @begin_commands.push "chown -R #{user}:#{user} /home/#{user} /opt"
     @begin_commands.push blank
   end
   
@@ -190,49 +196,44 @@ class Dockerfile
   def startup(text)
     @run_commands.push "Defining startup script".comment
     @run_commands.push "echo '#!/bin/sh -e' > /etc/rc.local"
-    @run_commands.push blank if text.strip.start_with? "#"
-    text.strip.split("\n").each do |line|
-      line.strip!
-      if line.start_with? "#"
-        @run_commands.push line[1..-1].strip.comment
-      elsif line.match /^\s*$/
-        @run_commands.push blank
-      else
-        @run_commands.push line.echo_to("/etc/rc.local")
-      end
-    end
+    @run_commands += text.write_to "/etc/rc.local"
     @run_commands.push blank
   end
   
   # void (string, string)
-  def cron(name, command)
-    @run_commands.push "Adding #{name} cronjob".comment
-    @run_commands.push "echo '#!/bin/sh -e' > /etc/cron.hourly/#{name}"
-    @run_commands.push "echo 'logger #{name}: $(' >> /etc/cron.hourly/#{name}"
+  def cron(name, command = nil)
 
-    command.strip.split("\n").each do |line|
-      line.strip!
-      if line.start_with? "#"
-        @run_commands.push line[1..-1].strip.comment
-      elsif line.match /^\s*$/
-        @run_commands.push blank
-      else
-        @run_commands.push "echo \"#{line.escape};\" >> /etc/cron.hourly/#{name}"
-      end
+    if command.nil?
+      command = name
+      name = "a"
     end
 
-    @run_commands.push "echo ')' >> /etc/cron.hourly/#{name}"
-    @run_commands.push "chmod 755 /etc/cron.hourly/#{name}"
+    file = "/etc/cron.hourly/#{name}"
+    @run_commands.push "Adding #{name} cronjob".comment
+    @run_commands.push "#!/bin/sh -e".echo_to file
+    @run_commands.push "logger #{name}: $(".echo_to file
+    @run_commands += command.write_to file
+    @run_commands.push ")".echo_to file
+    @run_commands.align ">> #{file}"
+    @run_commands.push "chmod 755 #{file}"
     @run_commands.push blank
   end
 
   # void (string, string)
-  def daemon(name, command)
+  def daemon(name, command = nil)
+
+    if command.nil?
+      command = name
+      name = "a"
+    end
+
+    file = "/etc/service/#{name}/run"
     @run_commands.push "Installing #{name} daemon".comment
     @run_commands.push "mkdir -p /etc/service/#{name}"
-    @run_commands.push "#!/bin/sh".echo_to("/etc/service/#{name}/run")
-    @run_commands.push "exec /sbin/setuser #{@user} #{command.flatten}".echo_to("/etc/service/#{name}/run")
-    @run_commands.push "chmod 755 /etc/service/#{name}/run"
+    @run_commands.push "#!/bin/sh".echo_to file
+    @run_commands.push "exec /sbin/setuser #{@user} #{command.flatten}".echo_to file
+    @run_commands.align ">> #{file}"
+    @run_commands.push "chmod 755 #{file}"
     @run_commands.push blank
   end
   
@@ -242,8 +243,8 @@ class Dockerfile
   end
   
   # void (string, string)
-  def add(source, destination = "/")
-    @adds.push "ADD #{source} #{destination}"
+  def copy(source, destination = "/")
+    @adds.push "COPY #{source} #{destination}"
   end
     
   # void (string, string)
@@ -264,7 +265,7 @@ class Dockerfile
   def create(file, contents)
     @run_commands.push "Creating #{file}".comment
     @run_commands.push "mkdir -p #{File.dirname(file)}"
-    @run_commands += contents.write_to(file)
+    @run_commands += contents.write_to file 
     @run_commands.push "chown #{@user}:#{@user} #{file}"
     @run_commands.push blank
   end
@@ -275,15 +276,27 @@ class Dockerfile
   end
   
   # void (string, string, string)
-  def repository(name, deb)
+  def repository(name, deb = nil)
+
+    if deb.nil?
+      deb = name
+      name = "external"
+    end
+
     @pre_install_commands.push "Adding #{name} repository".comment
-    @pre_install_commands.push "echo '#{deb}' >> /etc/apt/sources.list.d/#{name.downcase}.list"
+    @pre_install_commands.push deb.echo_to "/etc/apt/sources.list.d/#{name.downcase}.list"
     @pre_install_commands.push blank
   end
   
-  # void (string)
-  def key(key)
-    @pre_install_commands.push "Adding #{key} to keychain".comment
+  # void (string, string)
+  def key(name, key = nil)
+
+    if key.nil?
+      key = name
+      name = "key"
+    end
+
+    @pre_install_commands.push "Adding #{name} to keychain".comment
     # If key is all hex
     if key =~ /^[0-9A-F]+$/i
       # Import the key using GPG
@@ -300,7 +313,13 @@ class Dockerfile
   end
 
   # void (string, string)
-  def ppa(name, ppa)
+  def ppa(name, ppa = nil)
+
+    if ppa.nil?
+      ppa = name
+      name = "external"
+    end
+
     @pre_install_commands.push "Adding #{name} PPA".comment
     @pre_install_commands.push "add-apt-repository -y #{ppa}"
     @pre_install_commands.push blank
@@ -495,7 +514,7 @@ end
 # Parse Dockerfile.yml
 
 class Build
-
+ # Remember to start local web server and apt-cacher-ng container
 end
 
 class Run
@@ -572,9 +591,11 @@ class Main
      "name",
      "user",
      "env",     
-     "add",
-     "create",
+     "copy",
      "embed",
+     "create",
+     "download",
+     "git",
      "repository",
      "ppa",
      "key",
