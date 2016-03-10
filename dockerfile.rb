@@ -514,14 +514,147 @@ end
 # Parse Dockerfile.yml
 
 class Build
- # Remember to start local web server and apt-cacher-ng container
+ # Remember to start local web server
+
+  def initialize
+
+  end
+
+  def to_s
+
+  end
+
 end
 
 class Run
 
+  def initialize
+    @name    = File.basename(Dir.pwd)
+    @network = "bridge"
+    @ports   = Set.new    
+    @volumes = Set.new
+  end
+
+  # void (string)
+  def name(name)
+    @name = name
+  end
+  
+  # void (int)
+  def expose(port)
+    @ports.add port
+  end
+
+  # void (string)
+  def volume(volume)
+    @volumes.add volume
+  end
+
+  # void (string)
+  def network(network)
+    @network = network
+  end
+
+  # string (void)
+  def to_s
+    s = []
+
+    s.push "#!/bin/bash"
+    s.push ""
+
+    s.push "# Stopping any existing container"
+    s.push "docker stop #{@name}"
+    s.push ""
+
+    s.push "# Removing any existing container"
+    s.push "docker rm #{@name}"
+    s.push ""
+
+    s.push "# Creating the network"
+    s.push "docker network create #{@network}" if @network != "bridge"
+    s.push ""
+
+    s.push "# Determining where to host the volumes"
+    s.push "HOST=`readlink -f .`"
+    s.push "if [[ $EUID -eq 0 ]]; then"
+    s.push "   HOST=/opt"
+    s.push "fi"
+    s.push ""
+
+    s.push "# Creating directories for hosting volumes"
+    volumes = ""
+    unless @volumes.empty?
+      volumes = "-v " + @volumes.collect{|v| "${HOST}/#{@name}#{v}:#{v}"}.join(" -v ")
+      s += @volumes.collect{|v| "mkdir -p ${HOST}/#{@name}#{v}"}
+    end
+    s.push ""
+
+    ports = ""
+    unless @ports.empty?
+      ports = "-p " + @ports.collect{|p| "#{p}:#{p}"}.join(" -p ")
+    end
+
+    s.push "# Running the image"
+    s.push "docker run -it -d --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} /bin/bash"
+    s.push ""
+
+    return s.join "\n"
+  end
+
+end
+
+class Stop
+  
+  def initialize
+    @name = File.basename(Dir.pwd)
+  end
+
+  def name(name)
+    @name = name
+  end
+
+  def to_s
+    s = []
+    
+    s.push "#!/bin/bash"
+    s.push ""
+
+    s.push "# Stopping the container"
+    s.push "docker stop #{@name}"
+    s.push ""
+
+    s.push "# Removing the container"
+    s.push "docker rm #{@name}"
+    s.push ""
+
+    return s.join "\n"
+  end
+
 end
 
 class Ignore
+
+  def initialize
+    @name    = File.basename(Dir.pwd) 
+    @volumes = Set.new
+  end
+
+  # void (string)
+  def name(name)
+    @name = name
+  end
+  
+  # string (void)
+  def to_s
+    s = []
+
+    s.push ".git"    
+    s.push @name
+    s.push ".dockerignore"
+    s.push ""
+
+    return s.join "\n"
+  end
 
 end
 
@@ -531,6 +664,7 @@ class Manager
     @dockerfile = Dockerfile.new
     @build      = Build.new
     @run        = Run.new
+    @stop       = Stop.new
     @ignore     = Ignore.new
   end
 
@@ -538,8 +672,20 @@ class Manager
     self.instance_variables.each{|v| self.instance_variable_get(v).send(method, *args, &block) if self.instance_variable_get(v).respond_to? method}
   end
 
+  # string (void)
   def to_s
-    @dockerfile.to_s
+    @dockerfile.to_s    
+  end
+
+  # void (void)
+  def write
+    File.open("Dockerfile",    "w"){|f| f.write(@dockerfile.to_s)}
+    File.open("run.sh",        "w"){|f| f.write(@run.to_s)}
+    File.open("stop.sh",       "w"){|f| f.write(@stop.to_s)}
+    File.open(".dockerignore", "w"){|f| f.write(@ignore.to_s)}
+
+    File.chmod(0755, "run.sh")
+    File.chmod(0755, "stop.sh")
   end
 
 end
@@ -618,7 +764,7 @@ class Main
     manager = Manager.new
     parser = Parser.new(yaml, manager)
     @commands.each{|command| parser.parse(command)}
-    puts manager.to_s
+    manager.write
   end
 
 end
