@@ -156,6 +156,7 @@ class Dockerfile
   # string ()
   def to_s
     lines = []
+
     lines.push "# #{@name} #{Time.now}"
     lines.push "FROM #{@from}"
     lines.push "MAINTAINER #{@maintainer}"
@@ -166,6 +167,9 @@ class Dockerfile
     lines.push "" if !@ports.empty?
     lines += @adds
     lines.push "" if !@adds.empty?
+    lines.push "COPY Dockerfile /Dockerfile"
+    lines.push "COPY Dockerfile.yml /Dockerfile.yml"
+    lines.push ""
     lines.push build_run_command
     lines.push ""
     lines += @configures
@@ -173,6 +177,9 @@ class Dockerfile
     @volumes.each{|v| lines.push "VOLUME #{v}"}
     lines.push "" if !@volumes.empty?
     lines.push "ENTRYPOINT [\"/sbin/my_init\"]"
+    lines.push ""
+
+    lines.join "\n"
   end
   
   # void (string)
@@ -514,14 +521,49 @@ end
 # Parse Dockerfile.yml
 
 class Build
- # Remember to start local web server
 
   def initialize
+    @name = File.basename(Dir.pwd)
+    @server = false
+  end
 
+  # void (string)
+  def name(name)
+    @name = name
+  end
+
+  # void (string)
+  def deb(deb)
+    @server = true
   end
 
   def to_s
+    s = []
 
+    s.push "#!/bin/bash"
+    s.push ""
+
+    if @server
+      s.push "# Starting file server"
+      s.push "python -m SimpleHTTPServer 8888 & export PYTHON_PID=$!"
+      s.push ""
+    end
+
+    s.push "# Building image"
+    s.push "docker build -t docker-owncloud ."
+    s.push ""
+
+    if @server
+      s.push "# Stopping file server"
+      s.push "killall -9 $PYTHON_PID"
+      s.push ""
+    end
+
+    s.push "# Saving image"
+    s.push "echo Saving image..."
+    s.push "docker save #{@name} | gzip > #{@name}_`date +%Y%m%d%H%M%S`.tgz"
+
+    s.join "\n"
   end
 
 end
@@ -649,7 +691,7 @@ class Ignore
     s = []
 
     s.push ".git"    
-    s.push @name
+    s.push "#{@name}*"
     s.push ".dockerignore"
     s.push ""
 
@@ -680,10 +722,12 @@ class Manager
   # void (void)
   def write
     File.open("Dockerfile",    "w"){|f| f.write(@dockerfile.to_s)}
+    File.open("build.sh",      "w"){|f| f.write(@build.to_s)}
     File.open("run.sh",        "w"){|f| f.write(@run.to_s)}
     File.open("stop.sh",       "w"){|f| f.write(@stop.to_s)}
     File.open(".dockerignore", "w"){|f| f.write(@ignore.to_s)}
 
+    File.chmod(0755, "build.sh")
     File.chmod(0755, "run.sh")
     File.chmod(0755, "stop.sh")
   end
