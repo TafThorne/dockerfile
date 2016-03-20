@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 
 # dockerfile.rb
-# Copyright (C) 2015 Joe Ruether jrruethe@gmail.com
+# Copyright (C) 2016 Joe Ruether jrruethe@gmail.com
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -114,12 +114,12 @@ class Dockerfile
   
   def initialize
 
-    @from       = "phusion/baseimage:0.9.18"
-    @maintainer = "Joe Ruether <jrruethe@gmail.com>"
-    @name       = File.basename(Dir.pwd)
-    @network    = "bridge"
-    @user       = "root"
-    @id         = `id -u`.chomp # 1000
+    @from    = "phusion/baseimage:0.9.18"
+    @email   = "Unknown"
+    @name    = File.basename(Dir.pwd)
+    @network = "bridge"
+    @user    = "root"
+    @id      = `id -u`.chomp # 1000
     
     @requirements = Set.new
     @packages     = Set.new
@@ -159,7 +159,7 @@ class Dockerfile
 
     lines.push "# #{@name} #{Time.now}"
     lines.push "FROM #{@from}"
-    lines.push "MAINTAINER #{@maintainer}"
+    lines.push "MAINTAINER #{@email}"
     lines.push ""
     @envs.each{|p| lines.push "ENV #{p[0]} #{p[1]}"}
     lines.push "" if !@envs.empty?
@@ -197,6 +197,11 @@ class Dockerfile
   # void (string)
   def name(name)
     @name = name
+  end
+
+  # void (string)
+  def email(email)
+    @email = email
   end
 
   # void (string)
@@ -517,9 +522,6 @@ class Dockerfile
   end
 end
 
-################################################################################
-# Parse Dockerfile.yml
-
 class Build
 
   def initialize
@@ -561,7 +563,9 @@ class Build
 
     s.push "# Saving image"
     s.push "echo Saving image..."
-    s.push "docker save #{@name} | gzip > #{@name}_`date +%Y%m%d%H%M%S`.tgz"
+    s.push "rm -f #{@name}_*.tgz"
+    s.push "docker save #{@name} | gzip -9 > #{@name}_`date +%Y%m%d%H%M%S`.tgz"
+    s.push ""
 
     s.join "\n"
   end
@@ -605,16 +609,18 @@ class Run
     s.push ""
 
     s.push "# Stopping any existing container"
-    s.push "docker stop #{@name}"
+    s.push "docker stop #{@name} || true"
     s.push ""
 
     s.push "# Removing any existing container"
-    s.push "docker rm #{@name}"
+    s.push "docker rm #{@name} || true"
     s.push ""
 
-    s.push "# Creating the network"
-    s.push "docker network create #{@network}" if @network != "bridge"
-    s.push ""
+    if @network != "bridge"
+      s.push "# Creating the network"
+      s.push "docker network create #{@network} || true"
+      s.push ""
+    end
 
     s.push "# Determining where to host the volumes"
     s.push "HOST=`readlink -f .`"
@@ -628,6 +634,8 @@ class Run
     unless @volumes.empty?
       volumes = "-v " + @volumes.collect{|v| "${HOST}/#{@name}#{v}:#{v}"}.join(" -v ")
       s += @volumes.collect{|v| "mkdir -p ${HOST}/#{@name}#{v}"}
+      s += @volumes.collect{|v| "chown -R 1000:docker ${HOST}/#{@name}#{v}"}
+      s += @volumes.collect{|v| "chmod -R 775 ${HOST}/#{@name}#{v}"}
     end
     s.push ""
 
@@ -656,20 +664,161 @@ class Stop
   end
 
   def to_s
-    s = []
-    
-    s.push "#!/bin/bash"
-    s.push ""
 
-    s.push "# Stopping the container"
-    s.push "docker stop #{@name}"
-    s.push ""
+    <<-EOF.gsub(/^\s{6}/, "")
+      #!/bin/bash
 
-    s.push "# Removing the container"
-    s.push "docker rm #{@name}"
-    s.push ""
+      # Stopping the container
+      docker stop #{@name} || true
 
-    return s.join "\n"
+      # Removing the container
+      docker rm #{@name} || true
+    EOF
+
+  end
+
+end
+
+class Init
+
+  def initialize
+    @name = File.basename(Dir.pwd)
+  end
+
+  def name(name)
+    @name = name
+  end
+
+  def to_s
+    <<-EOF.gsub(/^\s{6}/, "")
+      #!/bin/sh
+      ### BEGIN INIT INFO
+      # Provides:          #{@name}
+      # Required-Start:    $docker
+      # Required-Stop:     $docker
+      # Default-Start:     2 3 4 5
+      # Default-Stop:      0 1 6
+      # Description:       #{@name}
+      ### END INIT INFO
+
+      start()
+      {
+        /opt/#{@name}/run.sh
+      }
+
+      stop()
+      {
+        /opt/#{@name}/stop.sh
+      }
+
+      case "$1" in
+        start)
+          start
+          ;;
+        stop)
+          stop
+          ;;
+        retart)
+          stop
+          start
+          ;;
+        *)
+          echo "Usage: $0 {start|stop|restart}"
+      esac
+    EOF
+  end
+
+end
+
+class Install
+
+  def initialize
+    @name = File.basename(Dir.pwd)
+  end
+
+  def name(name)
+    @name = name
+  end
+
+  def to_s
+    <<-EOF.gsub(/^\s{6}/, "")
+      #!/bin/bash
+      NAME=#{@name}
+      cd /opt/${NAME}
+      IMAGE=`ls ${NAME}_*.tgz`
+      VERSION=`echo ${IMAGE} | sed "s@${NAME}_\\(.*\\)\\.tgz@\\1@"`
+      gunzip -c /opt/${NAME}/${IMAGE} | docker load
+      /etc/init.d/${NAME} start
+    EOF
+  end
+
+end
+
+class Uninstall
+
+  def initialize
+    @name = File.basename(Dir.pwd)
+  end
+
+  def name(name)
+    @name = name
+  end
+
+  def to_s
+    <<-EOF.gsub(/^\s{6}/, "")
+      #!/bin/bash
+      NAME=#{@name}
+      /etc/init.d/${NAME} stop
+      rm -f /etc/init.d/${NAME}
+      docker rmi ${NAME}
+    EOF
+  end
+
+end
+
+class Package
+
+  def initialize
+    @name = File.basename(Dir.pwd)
+    @email = "Unknown"
+  end
+
+  def name(name)
+    @name = name
+  end
+
+  def email(email)
+    @email = email
+  end
+
+  def to_s
+    <<-EOF.gsub(/^\s{6}/, "")
+      #!/bin/bash
+
+      NAME=#{@name}
+      IMAGE=`ls ${NAME}_*.tgz`
+      VERSION=`echo ${IMAGE} | sed "s@${NAME}_\\(.*\\)\\.tgz@\\1@"`
+
+      rm -f ${NAME}_*.deb
+
+      fpm -s dir -t deb                   \\
+        --name ${NAME}                    \\
+        --version ${VERSION}              \\
+        --maintainer '#{@email}'          \\
+        --vendor '#{@email}'              \\
+        --license 'GPLv3+'                \\
+        --description ${NAME}             \\
+        --depends 'docker-engine > 1.9.0' \\
+        --after-install ./install.sh      \\
+        --before-remove ./uninstall.sh    \\
+        ./${IMAGE}=/opt/${NAME}/${IMAGE}  \\
+        ./run.sh=/opt/${NAME}/run.sh      \\
+        ./stop.sh=/opt/${NAME}/stop.sh    \\
+        ./init.sh=/etc/init.d/${NAME}
+
+      dpkg --info ${NAME}_${VERSION}_amd64.deb
+      dpkg --contents ${NAME}_${VERSION}_amd64.deb
+    EOF
   end
 
 end
@@ -693,6 +842,13 @@ class Ignore
     s.push ".git"    
     s.push "#{@name}*"
     s.push ".dockerignore"
+    s.push "build.sh"
+    s.push "run.sh"
+    s.push "stop.sh"
+    s.push "init.sh"
+    s.push "install.sh"
+    s.push "uninstall.sh"
+    s.push "package.sh"
     s.push ""
 
     return s.join "\n"
@@ -707,6 +863,10 @@ class Manager
     @build      = Build.new
     @run        = Run.new
     @stop       = Stop.new
+    @init       = Init.new
+    @install    = Install.new
+    @uninstall  = Uninstall.new
+    @package    = Package.new
     @ignore     = Ignore.new
   end
 
@@ -725,11 +885,19 @@ class Manager
     File.open("build.sh",      "w"){|f| f.write(@build.to_s)}
     File.open("run.sh",        "w"){|f| f.write(@run.to_s)}
     File.open("stop.sh",       "w"){|f| f.write(@stop.to_s)}
+    File.open("init.sh",       "w"){|f| f.write(@init.to_s)}
+    File.open("install.sh",    "w"){|f| f.write(@install.to_s)}
+    File.open("uninstall.sh",  "w"){|f| f.write(@uninstall.to_s)}
+    File.open("package.sh",    "w"){|f| f.write(@package.to_s)}
     File.open(".dockerignore", "w"){|f| f.write(@ignore.to_s)}
 
     File.chmod(0755, "build.sh")
     File.chmod(0755, "run.sh")
     File.chmod(0755, "stop.sh")
+    File.chmod(0755, "init.sh")
+    File.chmod(0755, "install.sh")
+    File.chmod(0755, "uninstall.sh")
+    File.chmod(0755, "package.sh")
   end
 
 end
@@ -779,6 +947,7 @@ class Main
     @commands = 
     [
      "name",
+     "email",
      "user",
      "env",     
      "copy",
