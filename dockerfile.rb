@@ -101,9 +101,9 @@ class Hash
     self.keys.each do |key|
       new_key = key.to_s.downcase
       self[new_key] = self.delete(key)
-      if self[new_key].is_a? Hash
-        self[new_key].downcase
-      end
+      #if self[new_key].is_a? Hash
+      #  self[new_key].downcase
+      #end
     end
     self
   end
@@ -236,7 +236,7 @@ class Dockerfile
 
     if command.nil?
       command = name
-      name = "a"
+      name = @name
     end
 
     file = "/etc/service/#{name}/run"
@@ -552,7 +552,7 @@ class Build
     end
 
     s.push "# Building image"
-    s.push "docker build -t docker-owncloud ."
+    s.push "docker build -t #{@name} ."
     s.push ""
 
     if @server
@@ -577,6 +577,7 @@ class Run
   def initialize
     @name    = File.basename(Dir.pwd)
     @network = "bridge"
+    @envs    = Set.new
     @ports   = Set.new    
     @volumes = Set.new
   end
@@ -586,6 +587,11 @@ class Run
     @name = name
   end
   
+  # void (string, string)
+  def env(key, value)
+    @envs.add [key, value]
+  end
+
   # void (int)
   def expose(port)
     @ports.add port
@@ -608,17 +614,23 @@ class Run
     s.push "#!/bin/bash"
     s.push ""
 
+    unless @envs.empty?
+      s.push "# Setting environment variables"
+      s += @envs.collect{|p| "#{p[0]}=#{p[1]}"}
+      s.push ""
+    end
+
     s.push "# Stopping any existing container"
-    s.push "docker stop #{@name} || true"
+    s.push "docker stop #{@name} >/dev/null 2>&1 || true"
     s.push ""
 
     s.push "# Removing any existing container"
-    s.push "docker rm #{@name} || true"
+    s.push "docker rm #{@name} >/dev/null 2>&1 || true"
     s.push ""
 
     if @network != "bridge"
       s.push "# Creating the network"
-      s.push "docker network create #{@network} || true"
+      s.push "docker network create #{@network} >/dev/null 2>&1 || true"
       s.push ""
     end
 
@@ -629,15 +641,15 @@ class Run
     s.push "fi"
     s.push ""
 
-    s.push "# Creating directories for hosting volumes"
     volumes = ""
     unless @volumes.empty?
+      s.push "# Creating directories for hosting volumes"
       volumes = "-v " + @volumes.collect{|v| "${HOST}/#{@name}#{v}:#{v}"}.join(" -v ")
       s += @volumes.collect{|v| "mkdir -p ${HOST}/#{@name}#{v}"}
       s += @volumes.collect{|v| "chown -R 1000:docker ${HOST}/#{@name}#{v}"}
       s += @volumes.collect{|v| "chmod -R 775 ${HOST}/#{@name}#{v}"}
+      s.push ""
     end
-    s.push ""
 
     ports = ""
     unless @ports.empty?
@@ -669,10 +681,10 @@ class Stop
       #!/bin/bash
 
       # Stopping the container
-      docker stop #{@name} || true
+      docker stop #{@name} >/dev/null 2>&1 || true
 
       # Removing the container
-      docker rm #{@name} || true
+      docker rm #{@name} >/dev/null 2>&1 || true
     EOF
 
   end
@@ -769,7 +781,6 @@ class Uninstall
       #!/bin/bash
       NAME=#{@name}
       /etc/init.d/${NAME} stop
-      rm -f /etc/init.d/${NAME}
       docker rmi ${NAME}
     EOF
   end
