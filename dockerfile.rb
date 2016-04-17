@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-require "pry"
+# require "pry"
 require "set"
 require "yaml"
 require "base64"
@@ -147,7 +147,7 @@ class Dockerfile
     @ip_address = `ip route get 8.8.8.8 | awk '{print $NF; exit}'`.chomp
 
     # Ip address of the docker interface
-    @docker_ip=`ifconfig docker0 | grep "inet addr"`.chomp.strip.split(/[ :]/)[2]
+    @docker_ip=`/sbin/ifconfig docker0 | grep "inet addr"`.chomp.strip.split(/[ :]/)[2]
   end
   
   ##############################################################################
@@ -177,6 +177,7 @@ class Dockerfile
     @volumes.each{|v| lines.push "VOLUME #{v}"}
     lines.push "" if !@volumes.empty?
     lines.push "ENTRYPOINT [\"/sbin/my_init\"]"
+    lines.push "CMD [\"\"]"
     lines.push ""
 
     lines.join "\n"
@@ -563,8 +564,8 @@ class Build
 
     s.push "# Saving image"
     s.push "echo Saving image..."
-    s.push "rm -f #{@name}_*.tgz"
-    s.push "docker save #{@name} | gzip -9 > #{@name}_`date +%Y%m%d%H%M%S`.tgz"
+    s.push "rm -f #{@name}_*.tar.bz2"
+    s.push "docker save #{@name} | bzip2 -9 > #{@name}_`date +%Y%m%d%H%M%S`.tar.bz2"
     s.push ""
 
     s.join "\n"
@@ -758,8 +759,9 @@ class Install
       NAME=#{@name}
       cd /opt/${NAME}
       IMAGE=`ls ${NAME}_*.tgz`
-      VERSION=`echo ${IMAGE} | sed "s@${NAME}_\\(.*\\)\\.tgz@\\1@"`
-      gunzip -c /opt/${NAME}/${IMAGE} | docker load
+      VERSION=`echo ${IMAGE} | sed "s@${NAME}_\\(.*\\)\\.tar\\.bz2@\\1@"`
+      bunzip2 -c /opt/${NAME}/${IMAGE} | docker load
+      update-rc.d ${NAME} defaults
       /etc/init.d/${NAME} start
     EOF
   end
@@ -781,6 +783,7 @@ class Uninstall
       #!/bin/bash
       NAME=#{@name}
       /etc/init.d/${NAME} stop
+      update-rc.d -f ${NAME} remove
       docker rmi ${NAME}
     EOF
   end
@@ -807,8 +810,8 @@ class Package
       #!/bin/bash
 
       NAME=#{@name}
-      IMAGE=`ls ${NAME}_*.tgz`
-      VERSION=`echo ${IMAGE} | sed "s@${NAME}_\\(.*\\)\\.tgz@\\1@"`
+      IMAGE=`ls ${NAME}_*.tar.bz2`
+      VERSION=`echo ${IMAGE} | sed "s@${NAME}_\\(.*\\)\\.tar\\.bz2@\\1@"`
 
       rm -f ${NAME}_*.deb
 
