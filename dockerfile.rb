@@ -131,12 +131,15 @@ class Dockerfile
   
   def initialize
 
-    @from    = "phusion/baseimage:0.9.18"
-    @email   = "Unknown"
-    @name    = File.basename(Dir.pwd)
-    @network = "bridge"
-    @user    = "root"
-    @id      = `id -u`.chomp # 1000
+    @from       = "phusion/baseimage:0.9.18"
+    @email      = "Unknown"
+    @name       = File.basename(Dir.pwd)
+    @network    = "bridge"
+    @user       = "root"
+    @id         = `id -u`.chomp # 1000
+    @app        = ""
+    @gui        = false
+    @persistent = false
     
     @depends      = Set.new
     @envs         = Set.new
@@ -182,19 +185,15 @@ class Dockerfile
     lines.push "FROM #{@from}"
     lines.push "MAINTAINER #{@email}"
     lines.push ""
-    lines.push "# Environment Variables"
+    lines.push "# Environment Variables" if !@envs.empty?
     @envs.each{|p| lines.push "ENV #{p[0]} #{p[1]}"}
     lines.push "" if !@envs.empty?
-    lines.push "# Exposed Ports"
+    lines.push "# Exposed Ports" if !@ports.empty?
     @ports.each{|p| lines.push "EXPOSE #{p}"}
     lines.push "" if !@ports.empty?
     lines.push "# Copy files into the image" if !@copies.empty?
     lines.push "" if !@copies.empty?
     lines += @copies
-    lines.push "# Copy source dockerfiles into the image"
-    lines.push "COPY Dockerfile.yml /Dockerfile.yml"
-    lines.push "COPY Dockerfile     /Dockerfile"
-    lines.push ""
     lines.push "# Run commands"
     lines.push build_run_command
     lines.push ""
@@ -202,47 +201,55 @@ class Dockerfile
     lines.push "" if !@configures.empty?
     lines += @configures
     lines.push "" if !@configures.empty?
-    lines.push "# Set up external volumes"
+    lines.push "# Set up external volumes" if !@volumes.empty?
     @volumes.each{|v| lines.push "VOLUME #{v}"}
     lines.push "" if !@volumes.empty?
+    lines.push "# Copy source dockerfiles into the image"
+    lines.push "COPY Dockerfile.yml /Dockerfile.yml"
+    lines.push "COPY Dockerfile     /Dockerfile"
+    lines.push ""
     lines.push "# Enter the container"
     lines.push "ENTRYPOINT [\"/sbin/my_init\"]"
-    lines.push "CMD [\"\"]"
-    lines.push ""
 
+    if !@app.empty?
+      lines.push "CMD [\"--\", \"#{@app}\"]"
+    else
+      lines.push "CMD [\"\"]"
+    end
+
+    lines.push ""
     lines.join "\n"
   end
   
-  # void (string)
-  def user(user)
-    @user = user
-    @begin_commands.push "Creating user / Adjusting user permissions".comment
-    @begin_commands.push "(groupadd -g #{@id} #{user} || true)"
-    @begin_commands.push "((useradd -u #{@id} -g #{@id} -p #{user} -m #{user}) || \\" 
-    @begin_commands.push " (usermod -u #{@id} #{user} && groupmod -g #{@id} #{user}))"
-    @begin_commands.push "mkdir -p /home/#{user}"
-    @begin_commands.push "chown -R #{user}:#{user} /home/#{user} /opt"
-    @begin_commands.push blank
-  end
-  
-  # void (string)
-  def name(name)
-    @name = name
+  ##############################################################################
+
+  # void (string, string)
+  def env(key, value)
+    @envs.add [key, value]
+    @environment_variables[key] = value
   end
 
   # void (string)
-  def email(email)
-    @email = email
+  def app(command)
+    @app = command
   end
 
-  # void (string)
-  def startup(text)
-    @run_commands.push "Defining startup script".comment
-    @run_commands.push "echo '#!/bin/sh -e' > /etc/rc.local"
-    @run_commands += text.write_to "/etc/rc.local"
+  # void (string, string)
+  def copy(source, destination = "/")
+    @copies.push "# SHA256: #{Digest::SHA256.file(source.substitute(@environment_variables)).hexdigest}"
+    @copies.push "COPY #{source} #{destination}"
+    @copies.push ""
+  end
+
+  # void (string, string)
+  def create(file, contents)
+    @run_commands.push "Creating #{file}".comment
+    @run_commands.push "mkdir -p #{File.dirname(file)}"
+    @run_commands += contents.write_to file 
+    @run_commands.push "chown #{@user}:#{@user} #{file}"
     @run_commands.push blank
   end
-  
+
   # void (string, string)
   def cron(name, command = nil)
 
@@ -279,20 +286,34 @@ class Dockerfile
     @run_commands.push "chmod 755 #{file}"
     @run_commands.push blank
   end
-  
-  # void (string, string)
-  def env(key, value)
-    @envs.add [key, value]
-    @environment_variables[key] = value
-  end
-  
-  # void (string, string)
-  def copy(source, destination = "/")
-    @copies.push "# SHA256: #{Digest::SHA256.file(source.substitute(@environment_variables)).hexdigest}"
-    @copies.push "COPY #{source} #{destination}"
-    @copies.push ""
-  end
+
+  # void (string)
+  def deb(deb)
+    @install_commands.push "Installing deb package".comment
+    @install_commands.push "wget http://#{@ip_address}:8888/#{deb}"
+    @install_commands.push "(dpkg -i #{deb} || true)"
+    @install_commands.push blank
+    @post_install_commands.push "rm -f #{deb}"
     
+    @packages.add "wget"
+    @deb_flag = true
+  end
+
+  # void (string)
+  def dependencies(package)
+    @depends.add package
+  end
+
+  # void (string, string)
+  def download(filename, source = nil)
+    throw "Not Implemented"
+  end
+
+  # void (string)
+  def email(email)
+    @email = email
+  end
+
   # void (string, string)
   def embed(source, destination = "/")
     @run_commands.push "Embedding #{source}".comment
@@ -306,34 +327,27 @@ class Dockerfile
     @run_commands.push "| tr -d ' ' | base64 -d > #{destination}"
     @run_commands.push blank
   end
-  
-  # void (string, string)
-  def create(file, contents)
-    @run_commands.push "Creating #{file}".comment
-    @run_commands.push "mkdir -p #{File.dirname(file)}"
-    @run_commands += contents.write_to file 
-    @run_commands.push "chown #{@user}:#{@user} #{file}"
-    @run_commands.push blank
-  end
-    
+
   # void (int)
   def expose(port)
     @ports.add port
   end
-  
-  # void (string, string, string)
-  def repository(name, deb = nil)
 
-    if deb.nil?
-      deb = name
-      name = "external"
-    end
-
-    @pre_install_commands.push "Adding #{name} repository".comment
-    @pre_install_commands.push deb.echo_to "/etc/apt/sources.list.d/#{name.downcase}.list"
-    @pre_install_commands.push blank
+  # void (string, string)
+  def git(path, url)
+    throw "Not Implemented"
   end
-  
+
+  # void (bool)
+  def gui(enabled)
+    throw "Not Implemented"
+  end
+
+  # void (string)
+  def install(package)
+    @packages.add package
+  end
+
   # void (string, string)
   def key(name, key = nil)
 
@@ -358,6 +372,21 @@ class Dockerfile
     @pre_install_commands.push blank
   end
 
+  # void (string)
+  def name(name)
+    @name = name
+  end
+
+  # void (string)
+  #def network(name)
+  #  throw "Not Implemented"
+  #end
+
+  # void (bool)
+  def persistent(enabled)
+    throw "Not Implemented"
+  end
+
   # void (string, string)
   def ppa(name, ppa = nil)
 
@@ -373,29 +402,20 @@ class Dockerfile
     @requirements.add "software-properties-common"
     @requirements.add "python-software-properties"
   end
-  
-  # void (string)
-  def install(package)
-    @packages.add package
-  end
-  
-  # void (string)
-  def depend(package)
-    @depends.add package
+
+  # void (string, string, string)
+  def repository(name, deb = nil)
+
+    if deb.nil?
+      deb = name
+      name = "external"
+    end
+
+    @pre_install_commands.push "Adding #{name} repository".comment
+    @pre_install_commands.push deb.echo_to "/etc/apt/sources.list.d/#{name.downcase}.list"
+    @pre_install_commands.push blank
   end
 
-  # void (string)
-  def deb(deb)
-    @install_commands.push "Installing deb package".comment
-    @install_commands.push "wget http://#{@ip_address}:8888/#{deb}"
-    @install_commands.push "(dpkg -i #{deb} || true)"
-    @install_commands.push blank
-    @post_install_commands.push "rm -f #{deb}"
-    
-    @packages.add "wget"
-    @deb_flag = true
-  end
-    
   # void (string)
   def run(text)
     text.split("\n").each do |line|
@@ -410,7 +430,27 @@ class Dockerfile
     end
     @run_commands.push blank 
   end
-  
+
+  # void (string)
+  def startup(text)
+    @run_commands.push "Defining startup script".comment
+    @run_commands.push "echo '#!/bin/sh -e' > /etc/rc.local"
+    @run_commands += text.write_to "/etc/rc.local"
+    @run_commands.push blank
+  end
+
+  # void (string)
+  def user(user)
+    @user = user
+    @begin_commands.push "Creating user / Adjusting user permissions".comment
+    @begin_commands.push "(groupadd -g #{@id} #{user} || true)"
+    @begin_commands.push "((useradd -u #{@id} -g #{@id} -p #{user} -m #{user}) || \\" 
+    @begin_commands.push " (usermod -u #{@id} #{user} && groupmod -g #{@id} #{user}))"
+    @begin_commands.push "mkdir -p /home/#{user}"
+    @begin_commands.push "chown -R #{user}:#{user} /home/#{user} /opt"
+    @begin_commands.push blank
+  end
+
   # void (string)
   def volume(volume)
     @end_commands.push "Fixing permission errors for volume".comment
@@ -421,7 +461,7 @@ class Dockerfile
     
     @volumes.add volume
   end
-  
+
   ##############################################################################
   private
     
@@ -531,9 +571,6 @@ class Dockerfile
     # Add continuations
     lines.reject{|l| l.end_with? "\\"}.append(" && \\")
 
-    # Align continuations
-    lines.align(" && \\").align(/\\$/)
-
     # First line should start with "RUN"
     lines[0][0..2] = "RUN"
     
@@ -542,13 +579,16 @@ class Dockerfile
     lines[-1].gsub! " \\", ""
     
     # Last line might be blank now, do it again
-    if lines[-1].match /^\s*$/
+    while lines[-1].match /^\s*$/
       lines.delete_at -1
       
       # Last line should not end with continuation
       lines[-1].gsub! " && \\", ""
       lines[-1].gsub! " \\", ""
     end
+
+    # Align continuations
+    lines.align(" && \\").align(/\\$/)
       
     # Make a string
     lines.join "\n"
@@ -614,6 +654,8 @@ class Run
     @envs    = Set.new
     @ports   = Set.new    
     @volumes = Set.new
+
+    @app = ""
   end
 
   # void (string)
@@ -639,6 +681,11 @@ class Run
   # void (string)
   def network(network)
     @network = network
+  end
+
+  # void (string)
+  def app(command)
+    @app = command
   end
 
   # string (void)
@@ -668,15 +715,15 @@ class Run
       s.push ""
     end
 
-    s.push "# Determining where to host the volumes"
-    s.push "HOST=`readlink -f .`"
-    s.push "if [[ $EUID -eq 0 ]]; then"
-    s.push "   HOST=/opt"
-    s.push "fi"
-    s.push ""
-
     volumes = ""
     unless @volumes.empty?
+      s.push "# Determining where to host the volumes"
+      s.push "HOST=`readlink -f .`"
+      s.push "if [[ $EUID -eq 0 ]]; then"
+      s.push "   HOST=/opt"
+      s.push "fi"
+      s.push ""
+
       s.push "# Creating directories for hosting volumes"
       volumes = "-v " + @volumes.collect{|v| "${HOST}/#{@name}#{v}:#{v}"}.join(" -v ")
       s += @volumes.collect{|v| "mkdir -p ${HOST}/#{@name}#{v}"}
@@ -690,9 +737,11 @@ class Run
       ports = "-p " + @ports.collect{|p| "#{p}:#{p}"}.join(" -p ")
     end
 
-    s.push "# Running the image"
-    # s.push "docker run -it -d --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} /bin/bash"
-    s.push "docker run -it -d --name #{@name} --net #{@network} #{ports} #{volumes} #{@name}"
+    # Run in daemon mode unless there is an app
+    daemon = @app.empty? ? "-d" : ""
+
+    s.push "# Run the image"
+    s.push "docker run -it #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} #{@app} $@"
     s.push ""
 
     return s.join "\n"
@@ -992,31 +1041,34 @@ class Main
 
   def initialize(argv)
 
-    # Always do environment variables first
+    # Always do environment variables first, so they can be substituted into strings
     @commands = 
     [
-     "env",     
-     "copy",
-     "create",
-     "cron",
-     "daemon",
-     "deb",
-     "depend",
-     "download",
-     "email",
-     "embed",
-     "expose",
-     "git",
-     "install",
-     "key",
-     "name",
-     "network",
-     "ppa",
-     "repository",
-     "run",
-     "startup",
-     "user",
-     "volume"
+     "env",          # Specify an environment variable
+     "app",          # Set the application to run
+     "copy",         # Copy a file from the host into the image
+     "create",       # Create a file
+     "cron",         # Specify a command to run every hour
+     "daemon",       # Specify a daemon to run
+     "deb",          # Manually install a deb package from the host
+     "dependencies", # Temporarily install these dependencies during the build stage
+     "download",     # Download a file into the image
+     "email",        # Specify the maintainer email address
+     "embed",        # Embed a file from the host into the dockerfile
+     "expose",       # Expose ports
+     "git",          # Clone a git repository
+     "gui",          # Set to true to enable GUI support
+     "install",      # Install these packages to the image
+     "key",          # Load a GPG key
+     "name",         # Specify the name of the image
+     "network",      # Specify networks to join
+     "persistent",   # Set to true to enable persistence between runs
+     "ppa",          # Add an Ubuntu PPA to the image
+     "repository",   # Add repositories to the image
+     "run",          # Add a run script to the image
+     "startup",      # Define a startup script
+     "user",         # Specify the user to create and use
+     "volume"        # Specify an external volume
     ]
 
   end
