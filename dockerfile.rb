@@ -20,46 +20,62 @@
 require "set"
 require "yaml"
 require "base64"
+require "digest"
 
 # Patches
 class String
 
-   # string (void)
-   def flatten
-      self.strip.gsub(/\s*\\\s*/, " ")
-   end
+  # string (void)
+  def flatten
+     self.strip.gsub(/\s*\\\s*/, " ")
+  end
 
-   # string (void)
-   def escape
-      self.gsub("\"","\\\"").
-           gsub("${", "\\${").
-           gsub("$(", "\\$(")
-   end
+  # string (void)
+  def escape
+     self.gsub("\"","\\\"").
+          gsub("${", "\\${").
+          gsub("$(", "\\$(")
+  end
 
-   # string (void)
-   def comment
-      "`\# #{self}`"
-   end
+  # string (void)
+  def comment
+     "`\# #{self}`"
+  end
 
-   # string (string)
-   def echo_to(file)
-      "echo \"#{self.escape}\" >> #{file}"
-   end
+  # string (string)
+  def echo_to(file)
+     "echo \"#{self.escape}\" >> #{file}"
+  end
 
-   # [string] (string)
-   def write_to(file)
+  # [string] (string)
+  def write_to(file)
     lines = []
     self.strip.split("\n").each do |line|
       line.strip!
       lines.push line.echo_to(file)
     end
     lines.align(" >> #{file}")
-   end
+  end
 
-   # string (string)
-   def run_as(name)
-     "/sbin/setuser #{name} #{self}"
-   end
+  # string (string)
+  def run_as(name)
+    "/sbin/setuser #{name} #{self}"
+  end
+
+  # string (void)
+  def deindent
+    shortest_length = self.lines.min_by{|l| l.match(/^\s*/).to_s.length}.match(/^\s*/).to_s.length
+    self.gsub(/^\s{#{shortest_length}}/, "")
+  end
+
+  # string (map)
+  def substitute(mapping)
+    s = self.dup
+    mapping.each_pair do |k, v|
+      s.gsub!(/\$#{k}/, v.to_s)
+    end
+    return s
+  end
 
 end
 
@@ -68,7 +84,8 @@ class Array
   # [string] (int)
   def indent(count)
     self.collect do |l|
-      l.insert(0, " " * count)
+      # l.insert(0, " " * count)
+      (" " * count) + l
     end
   end
 
@@ -121,15 +138,18 @@ class Dockerfile
     @user    = "root"
     @id      = `id -u`.chomp # 1000
     
-    @requirements = Set.new
-    @packages     = Set.new
     @depends      = Set.new
     @envs         = Set.new
+    @packages     = Set.new
     @ports        = Set.new
+    @requirements = Set.new
     @volumes      = Set.new
+
+    # Keep a mapping of environment variables
+    @environment_variables = {}
     
     # Files to add before and after the run command
-    @adds       = []
+    @copies     = []
     @configures = []
     
     # Command lists for the run section
@@ -155,27 +175,37 @@ class Dockerfile
   
   # string ()
   def to_s
+
     lines = []
 
     lines.push "# #{@name} #{Time.now}"
     lines.push "FROM #{@from}"
     lines.push "MAINTAINER #{@email}"
     lines.push ""
+    lines.push "# Environment Variables"
     @envs.each{|p| lines.push "ENV #{p[0]} #{p[1]}"}
     lines.push "" if !@envs.empty?
+    lines.push "# Exposed Ports"
     @ports.each{|p| lines.push "EXPOSE #{p}"}
     lines.push "" if !@ports.empty?
-    lines += @adds
-    lines.push "" if !@adds.empty?
-    lines.push "COPY Dockerfile /Dockerfile"
+    lines.push "# Copy files into the image" if !@copies.empty?
+    lines.push "" if !@copies.empty?
+    lines += @copies
+    lines.push "# Copy source dockerfiles into the image"
     lines.push "COPY Dockerfile.yml /Dockerfile.yml"
+    lines.push "COPY Dockerfile     /Dockerfile"
     lines.push ""
+    lines.push "# Run commands"
     lines.push build_run_command
     lines.push ""
+    lines.push "# Copy files into the image, overwriting any existing files" if !@configures.empty?
+    lines.push "" if !@configures.empty?
     lines += @configures
     lines.push "" if !@configures.empty?
+    lines.push "# Set up external volumes"
     @volumes.each{|v| lines.push "VOLUME #{v}"}
     lines.push "" if !@volumes.empty?
+    lines.push "# Enter the container"
     lines.push "ENTRYPOINT [\"/sbin/my_init\"]"
     lines.push "CMD [\"\"]"
     lines.push ""
@@ -253,11 +283,14 @@ class Dockerfile
   # void (string, string)
   def env(key, value)
     @envs.add [key, value]
+    @environment_variables[key] = value
   end
   
   # void (string, string)
   def copy(source, destination = "/")
-    @adds.push "COPY #{source} #{destination}"
+    @copies.push "# SHA256: #{Digest::SHA256.file(source.substitute(@environment_variables)).hexdigest}"
+    @copies.push "COPY #{source} #{destination}"
+    @copies.push ""
   end
     
   # void (string, string)
@@ -490,7 +523,7 @@ class Dockerfile
     lines += @end_commands
     
     # Indent lines
-    lines.indent(5)
+    lines = lines.indent(5)
 
     # Unindent comments
     lines.select{|l| l.include? " `#"}.collect{|l| l.sub!(" `#", "`#")}
@@ -658,7 +691,8 @@ class Run
     end
 
     s.push "# Running the image"
-    s.push "docker run -it -d --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} /bin/bash"
+    # s.push "docker run -it -d --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} /bin/bash"
+    s.push "docker run -it -d --name #{@name} --net #{@network} #{ports} #{volumes} #{@name}"
     s.push ""
 
     return s.join "\n"
@@ -678,7 +712,7 @@ class Stop
 
   def to_s
 
-    <<-EOF.gsub(/^\s{6}/, "")
+    <<-EOF.deindent
       #!/bin/bash
 
       # Stopping the container
@@ -703,7 +737,7 @@ class Init
   end
 
   def to_s
-    <<-EOF.gsub(/^\s{6}/, "")
+    <<-EOF.deindent
       #!/bin/sh
       ### BEGIN INIT INFO
       # Provides:          #{@name}
@@ -754,7 +788,7 @@ class Install
   end
 
   def to_s
-    <<-EOF.gsub(/^\s{6}/, "")
+    <<-EOF.deindent
       #!/bin/bash
       NAME=#{@name}
       cd /opt/${NAME}
@@ -779,7 +813,7 @@ class Uninstall
   end
 
   def to_s
-    <<-EOF.gsub(/^\s{6}/, "")
+    <<-EOF.deindent
       #!/bin/bash
       NAME=#{@name}
       /etc/init.d/${NAME} stop
@@ -806,7 +840,7 @@ class Package
   end
 
   def to_s
-    <<-EOF.gsub(/^\s{6}/, "")
+    <<-EOF.deindent
       #!/bin/bash
 
       NAME=#{@name}
@@ -893,25 +927,25 @@ class Manager
     @dockerfile.to_s    
   end
 
-  # void (void)
-  def write
-    File.open("Dockerfile",    "w"){|f| f.write(@dockerfile.to_s)}
-    File.open("build.sh",      "w"){|f| f.write(@build.to_s)}
-    File.open("run.sh",        "w"){|f| f.write(@run.to_s)}
-    File.open("stop.sh",       "w"){|f| f.write(@stop.to_s)}
-    File.open("init.sh",       "w"){|f| f.write(@init.to_s)}
-    File.open("install.sh",    "w"){|f| f.write(@install.to_s)}
-    File.open("uninstall.sh",  "w"){|f| f.write(@uninstall.to_s)}
-    File.open("package.sh",    "w"){|f| f.write(@package.to_s)}
-    File.open(".dockerignore", "w"){|f| f.write(@ignore.to_s)}
+  # void (string, object)
+  def write(filename, object)
+    File.open(filename, "w"){|f| f.write(object.to_s)}
+    File.chmod(0755, filename)
+  end
 
-    File.chmod(0755, "build.sh")
-    File.chmod(0755, "run.sh")
-    File.chmod(0755, "stop.sh")
-    File.chmod(0755, "init.sh")
-    File.chmod(0755, "install.sh")
-    File.chmod(0755, "uninstall.sh")
-    File.chmod(0755, "package.sh")
+  # void (void)
+  def create_files
+    {
+      "Dockerfile"    => @dockerfile,
+      "build.sh"      => @build,
+      "run.sh"        => @run,
+      "stop.sh"       => @stop,
+      "init.sh"       => @init,
+      "install.sh"    => @install,
+      "uninstall.sh"  => @uninstall,
+      "package.sh"    => @package,
+      ".dockerignore" => @ignore
+    }.each_pair{|k, v| write(k, v)}
   end
 
 end
@@ -958,30 +992,31 @@ class Main
 
   def initialize(argv)
 
+    # Always do environment variables first
     @commands = 
     [
-     "name",
-     "email",
-     "user",
      "env",     
      "copy",
-     "embed",
      "create",
-     "download",
-     "git",
-     "repository",
-     "ppa",
-     "key",
-     "install",
-     "depend",
+     "cron",
+     "daemon",
      "deb",
+     "depend",
+     "download",
+     "email",
+     "embed",
+     "expose",
+     "git",
+     "install",
+     "key",
+     "name",
+     "network",
+     "ppa",
+     "repository",
      "run",
      "startup",
-     "daemon",
-     "cron",
-     "expose",
-     "volume",
-     "network"
+     "user",
+     "volume"
     ]
 
   end
@@ -991,7 +1026,8 @@ class Main
     manager = Manager.new
     parser = Parser.new(yaml, manager)
     @commands.each{|command| parser.parse(command)}
-    manager.write
+    manager.create_files
+    puts manager.to_s
   end
 
 end
