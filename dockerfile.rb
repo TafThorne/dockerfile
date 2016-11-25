@@ -216,12 +216,13 @@ class Dockerfile
     lines.push "COPY Dockerfile     /Dockerfile"
     lines.push ""
     lines.push "# Enter the container"
-    lines.push "ENTRYPOINT [\"/sbin/my_init\"]"
 
     if !@app.empty?
-      lines.push "CMD [\"--quiet\", \"--\", \"#{@app}\"]"
+      user = @user != "root" ? "\"setuser\", \"#{@user}\", " : ""
+      lines.push "CMD [\"/sbin/my_init\", \"--quiet\", \"--\", #{user}\"#{@app}\"]"
     else
-      lines.push "CMD [\"--quiet\"]"
+      lines.push "ENTRYPOINT [\"/sbin/my_init\"]"
+      lines.push "CMD [\"\"]"
     end
 
     lines.push ""
@@ -674,9 +675,11 @@ class Run
     @ports   = Set.new    
     @volumes = Set.new
 
-    @app        = ""
-    @gui        = false
-    @persistent = false
+    @user        = "root"
+    @app         = ""
+    @interactive = false
+    @gui         = false
+    @persistent  = false
   end
 
   # void (string)
@@ -699,6 +702,11 @@ class Run
     @gui = enabled
   end
 
+  # void (bool)
+  def interactive(enabled)
+    @interactive = enabled
+  end 
+
   # void (string)
   def name(name)
     @name = name
@@ -712,6 +720,11 @@ class Run
   # void (bool)
   def persistent(enabled)
     @persistent = enabled
+  end
+
+  # void (string)
+  def user(name)
+    @user = name
   end
 
   # void (string)
@@ -760,10 +773,23 @@ class Run
       ports = "-p " + @ports.collect{|p| "#{p}:#{p}"}.join(" -p ")
     end
 
-    # Pipe app into bash
-    app    = @app.empty? ? ""   : "/bin/bash"
-    pipe   = @app.empty? ? ""   : "echo \"#{@app} $@\" | ".sub("bash ", "")
-    tty    = @app.empty? ? "-t" : ""
+    # If the app is interactive
+    if !@app.empty? && @interactive
+      app = @app
+      pipe = ""
+      tty = "-t"
+    else
+      # Pipe app into bash
+      app    = @app.empty? ? ""   : "/bin/bash"
+      pipe   = @app.empty? ? ""   : "echo \"#{@app} $@\" | "
+      tty    = @app.empty? ? "-t" : ""
+    end
+
+    # If the app should be run as a specific user
+    user = ""
+    if !@app.empty? && @user != "root"
+      user = "setuser #{@user}"
+    end    
 
     # Run in daemon mode unless there is an app
     daemon = @app.empty? ? "-d" : ""
@@ -772,7 +798,7 @@ class Run
     persistent = @persistent ? "" : "--rm"
 
     # Build the run command
-    command = "#{pipe} docker run -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} #{app}".squash
+    command = "#{pipe}docker run -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} /sbin/my_init --quiet -- #{user} #{app}".squash
 
     if @persistent
       s.push "# Determine if a container already exists"
@@ -787,6 +813,7 @@ class Run
     else
       s.push "# Run the image"
       s.push "#{command}"
+      s.push ""
     end
 
     return s.join "\n"
@@ -1117,6 +1144,7 @@ class Main
      "git",          # Clone a git repository
      "gui",          # Set to true to enable GUI support
      "install",      # Install these packages to the image
+     "interactive",  # Allocates a tty when running
      "key",          # Load a GPG key
      "name",         # Specify the name of the image
      "network",      # Specify networks to join
