@@ -31,6 +31,11 @@ class String
   end
 
   # string (void)
+  def squash
+    self.gsub(/\s+/, " ")
+  end
+
+  # string (void)
   def escape
      self.gsub("\"","\\\"").
           gsub("${", "\\${").
@@ -181,29 +186,31 @@ class Dockerfile
 
     lines = []
 
+    run_command = build_run_command
+
     lines.push "# #{@name} #{Time.now}"
     lines.push "FROM #{@from}"
     lines.push "MAINTAINER #{@email}"
     lines.push ""
-    lines.push "# Environment Variables" if !@envs.empty?
+    lines.push "# Environment Variables"                                     if !@envs.empty?
     @envs.each{|p| lines.push "ENV #{p[0]} #{p[1]}"}
-    lines.push "" if !@envs.empty?
-    lines.push "# Exposed Ports" if !@ports.empty?
+    lines.push ""                                                            if !@envs.empty?
+    lines.push "# Exposed Ports"                                             if !@ports.empty?
     @ports.each{|p| lines.push "EXPOSE #{p}"}
-    lines.push "" if !@ports.empty?
-    lines.push "# Copy files into the image" if !@copies.empty?
-    lines.push "" if !@copies.empty?
+    lines.push ""                                                            if !@ports.empty?
+    lines.push "# Copy files into the image"                                 if !@copies.empty?
+    lines.push ""                                                            if !@copies.empty?
     lines += @copies
-    lines.push "# Run commands"
-    lines.push build_run_command
-    lines.push ""
+    lines.push "# Run commands"                                              if !run_command.empty?
+    lines.push run_command                                                   if !run_command.empty?
+    lines.push ""                                                            if !run_command.empty?
     lines.push "# Copy files into the image, overwriting any existing files" if !@configures.empty?
-    lines.push "" if !@configures.empty?
+    lines.push ""                                                            if !@configures.empty?
     lines += @configures
-    lines.push "" if !@configures.empty?
-    lines.push "# Set up external volumes" if !@volumes.empty?
+    lines.push ""                                                            if !@configures.empty?
+    lines.push "# Set up external volumes"                                   if !@volumes.empty?
     @volumes.each{|v| lines.push "VOLUME #{v}"}
-    lines.push "" if !@volumes.empty?
+    lines.push ""                                                            if !@volumes.empty?
     lines.push "# Copy source dockerfiles into the image"
     lines.push "COPY Dockerfile.yml /Dockerfile.yml"
     lines.push "COPY Dockerfile     /Dockerfile"
@@ -212,9 +219,9 @@ class Dockerfile
     lines.push "ENTRYPOINT [\"/sbin/my_init\"]"
 
     if !@app.empty?
-      lines.push "CMD [\"--\", \"#{@app}\"]"
+      lines.push "CMD [\"--quiet\", \"--\", \"#{@app}\"]"
     else
-      lines.push "CMD [\"\"]"
+      lines.push "CMD [\"--quiet\"]"
     end
 
     lines.push ""
@@ -383,9 +390,9 @@ class Dockerfile
   #end
 
   # void (bool)
-  def persistent(enabled)
-    throw "Not Implemented"
-  end
+  #def persistent(enabled)
+  #  throw "Not Implemented"
+  #end
 
   # void (string, string)
   def ppa(name, ppa = nil)
@@ -561,35 +568,39 @@ class Dockerfile
 
     # End commands
     lines += @end_commands
-    
-    # Indent lines
-    lines = lines.indent(5)
 
-    # Unindent comments
-    lines.select{|l| l.include? " `#"}.collect{|l| l.sub!(" `#", "`#")}
+    # If there are lines to process
+    if !lines.empty?    
 
-    # Add continuations
-    lines.reject{|l| l.end_with? "\\"}.append(" && \\")
+      # Indent lines
+      lines = lines.indent(5)
 
-    # First line should start with "RUN"
-    lines[0][0..2] = "RUN"
-    
-    # Last line should not end with continuation
-    lines[-1].gsub! " && \\", ""
-    lines[-1].gsub! " \\", ""
-    
-    # Last line might be blank now, do it again
-    while lines[-1].match /^\s*$/
-      lines.delete_at -1
+      # Unindent comments
+      lines.select{|l| l.include? " `#"}.collect{|l| l.sub!(" `#", "`#")}
+
+      # Add continuations
+      lines.reject{|l| l.end_with? "\\"}.append(" && \\")
+
+      # First line should start with "RUN"
+      lines[0][0..2] = "RUN"
       
       # Last line should not end with continuation
       lines[-1].gsub! " && \\", ""
       lines[-1].gsub! " \\", ""
+      
+      # Last line might be blank now, do it again
+      while lines[-1].match /^\s*$/
+        lines.delete_at -1
+        
+        # Last line should not end with continuation
+        lines[-1].gsub! " && \\", ""
+        lines[-1].gsub! " \\", ""
+      end
+
+      # Align continuations
+      lines.align(" && \\").align(/\\$/)
     end
 
-    # Align continuations
-    lines.align(" && \\").align(/\\$/)
-      
     # Make a string
     lines.join "\n"
     
@@ -619,6 +630,14 @@ class Build
     s.push "#!/bin/bash"
     s.push ""
 
+    s.push "# Stopping any existing container"
+    s.push "docker stop #{@name} >/dev/null 2>&1 || true"
+    s.push ""
+
+    s.push "# Removing any existing container"
+    s.push "docker rm #{@name} >/dev/null 2>&1 || true"
+    s.push ""
+    
     if @server
       s.push "# Starting file server"
       s.push "python -m SimpleHTTPServer 8888 & export PYTHON_PID=$!"
@@ -655,12 +674,14 @@ class Run
     @ports   = Set.new    
     @volumes = Set.new
 
-    @app = ""
+    @app        = ""
+    @gui        = false
+    @persistent = false
   end
 
   # void (string)
-  def name(name)
-    @name = name
+  def app(command)
+    @app = command
   end
   
   # void (string, string)
@@ -673,9 +694,14 @@ class Run
     @ports.add port
   end
 
+  # void (bool)
+  def gui(enabled)
+    @gui = enabled
+  end
+
   # void (string)
-  def volume(volume)
-    @volumes.add volume
+  def name(name)
+    @name = name
   end
 
   # void (string)
@@ -683,9 +709,14 @@ class Run
     @network = network
   end
 
+  # void (bool)
+  def persistent(enabled)
+    @persistent = enabled
+  end
+
   # void (string)
-  def app(command)
-    @app = command
+  def volume(volume)
+    @volumes.add volume
   end
 
   # string (void)
@@ -700,14 +731,6 @@ class Run
       s += @envs.collect{|p| "#{p[0]}=#{p[1]}"}
       s.push ""
     end
-
-    s.push "# Stopping any existing container"
-    s.push "docker stop #{@name} >/dev/null 2>&1 || true"
-    s.push ""
-
-    s.push "# Removing any existing container"
-    s.push "docker rm #{@name} >/dev/null 2>&1 || true"
-    s.push ""
 
     if @network != "bridge"
       s.push "# Creating the network"
@@ -737,12 +760,34 @@ class Run
       ports = "-p " + @ports.collect{|p| "#{p}:#{p}"}.join(" -p ")
     end
 
+    # Pipe app into bash
+    app    = @app.empty? ? ""   : "/bin/bash"
+    pipe   = @app.empty? ? ""   : "echo \"#{@app} $@\" | ".sub("bash ", "")
+    tty    = @app.empty? ? "-t" : ""
+
     # Run in daemon mode unless there is an app
     daemon = @app.empty? ? "-d" : ""
 
-    s.push "# Run the image"
-    s.push "docker run -it #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} #{@app} $@"
-    s.push ""
+    # Remove the container unless there is persistence
+    persistent = @persistent ? "" : "--rm"
+
+    # Build the run command
+    command = "#{pipe} docker run -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} #{app}".squash
+
+    if @persistent
+      s.push "# Determine if a container already exists"
+      s.push "if [ `docker ps -a -f name=#{@name} | wc -l` -gt 1 ]; then"
+      s.push "   # Start the image"
+      s.push "   " + "#{pipe}docker start -i -a #{@name}".squash
+      s.push "else"
+      s.push "   # Run the image"
+      s.push "   #{command}"
+      s.push "fi"
+      s.push ""
+    else
+      s.push "# Run the image"
+      s.push "#{command}"
+    end
 
     return s.join "\n"
   end
@@ -753,23 +798,34 @@ class Stop
   
   def initialize
     @name = File.basename(Dir.pwd)
+    @persistent = false
   end
 
   def name(name)
     @name = name
   end
 
+  def persistent(enabled)
+    @persistent = enabled
+  end
+
   def to_s
 
-    <<-EOF.deindent
-      #!/bin/bash
+    lines = []
 
-      # Stopping the container
-      docker stop #{@name} >/dev/null 2>&1 || true
+    lines.push "#!/bin/bash"
+    lines.push ""
+    lines.push "# Stopping the container"
+    lines.push "docker stop #{@name} >/dev/null 2>&1 || true"
+    lines.push ""
 
-      # Removing the container
-      docker rm #{@name} >/dev/null 2>&1 || true
-    EOF
+    if !@persistent
+      lines.push "# Removing the container"
+      lines.push "docker rm #{@name} >/dev/null 2>&1 || true"
+      lines.push ""
+    end
+
+    return lines.join "\n"
 
   end
 
@@ -1019,9 +1075,11 @@ class Parser
 
       # Call the recipient depending on the format of the node
       case node
-        when String then @recipient.send(name, node)
-        when Fixnum then @recipient.send(name, node)
-        when Hash   then @recipient.send(name, node.first[0], node.first[1])
+        when TrueClass  then @recipient.send(name, node)
+        when FalseClass then @recipient.send(name, node)
+        when String     then @recipient.send(name, node)
+        when Fixnum     then @recipient.send(name, node)
+        when Hash       then @recipient.send(name, node.first[0], node.first[1])
         when Array
           node.each do |item|
             case item
