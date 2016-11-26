@@ -21,6 +21,7 @@ require "set"
 require "yaml"
 require "base64"
 require "digest"
+require "fileutils"
 
 # Patches
 class String
@@ -69,8 +70,8 @@ class String
 
   # string (void)
   def deindent
-    shortest_length = self.lines.min_by{|l| l.match(/^\s*/).to_s.length}.match(/^\s*/).to_s.length
-    self.gsub(/^\s{#{shortest_length}}/, "")
+    # TODO: Derive the 6 from the shortest non-empty line
+    self.gsub(/^ {6}/, "")
   end
 
   # string (map)
@@ -998,17 +999,29 @@ class Package
   def initialize
     @name = File.basename(Dir.pwd)
     @email = "Unknown"
+    @app = false
   end
 
-  def name(name)
-    @name = name
+  def app(name)
+    @app = true
   end
 
   def email(email)
     @email = email
   end
 
+  def name(name)
+    @name = name
+  end
+
   def to_s
+
+    if @app
+      extra = "./root/usr=/"
+    else
+      extra = "./root/etc=/"
+    end
+
     <<-EOF.deindent
       #!/bin/bash
 
@@ -1018,20 +1031,19 @@ class Package
 
       rm -f ${NAME}_*.deb
 
-      fpm -s dir -t deb                   \\
-        --name ${NAME}                    \\
-        --version ${VERSION}              \\
-        --maintainer '#{@email}'          \\
-        --vendor '#{@email}'              \\
-        --license 'GPLv3+'                \\
-        --description ${NAME}             \\
-        --depends 'docker-engine > 1.9.0' \\
-        --after-install ./install.sh      \\
-        --before-remove ./uninstall.sh    \\
-        ./${IMAGE}=/opt/${NAME}/${IMAGE}  \\
-        ./run.sh=/opt/${NAME}/run.sh      \\
-        ./stop.sh=/opt/${NAME}/stop.sh    \\
-        ./init.sh=/etc/init.d/${NAME}
+      fpm -s dir -t deb                                 \\
+        --name ${NAME}                                  \\
+        --version ${VERSION}                            \\
+        --maintainer '#{@email}'                        \\
+        --vendor '#{@email}'                            \\
+        --license 'GPLv3+'                              \\
+        --description ${NAME}                           \\
+        --depends 'docker-engine > 1.9.0'               \\
+        --after-install ./root/opt/${NAME}/install.sh   \\
+        --before-remove ./root/opt/${NAME}/uninstall.sh \\
+        ./${IMAGE}=/opt/${NAME}/${IMAGE}                \\
+        ./root/opt=/                                    \\
+        #{extra}
 
       dpkg --info ${NAME}_${VERSION}_amd64.deb
       dpkg --contents ${NAME}_${VERSION}_amd64.deb
@@ -1060,12 +1072,11 @@ class Ignore
     s.push "#{@name}*"
     s.push ".dockerignore"
     s.push "build.sh"
-    s.push "run.sh"
-    s.push "stop.sh"
-    s.push "init.sh"
-    s.push "install.sh"
-    s.push "uninstall.sh"
     s.push "package.sh"
+    s.push "root/*"
+
+    # TODO Add volumes
+
     s.push ""
 
     return s.join "\n"
@@ -1087,6 +1098,7 @@ class Manager
     @ignore     = Ignore.new
 
     @apps = []
+    @name = File.basename(Dir.pwd)
   end
 
   # Forward a method call to the top-level classes
@@ -1124,6 +1136,12 @@ class Manager
     forward(:app, name)
   end
 
+  # void (string)
+  def name(name)
+    @name = name
+    forward_all(:name, name)
+  end
+
   # string (void)
   def to_s
     @dockerfile.to_s    
@@ -1131,6 +1149,8 @@ class Manager
 
   # void (string, object)
   def write(filename, object)
+    dir = File.dirname filename
+    FileUtils.mkdir_p dir
     File.open(filename, "w"){|f| f.write(object.to_s)}
     File.chmod(0755, filename)
   end
@@ -1139,25 +1159,24 @@ class Manager
   def create_files
     files = 
     {
-      "Dockerfile"    => @dockerfile,
-      "build.sh"      => @build,
-      # "run.sh"        => @run,
-      "stop.sh"       => @stop,
-      "init.sh"       => @init,
-      "install.sh"    => @install,
-      "uninstall.sh"  => @uninstall,
-      "package.sh"    => @package,
-      ".dockerignore" => @ignore
+      "Dockerfile"                     => @dockerfile,
+      "build.sh"                       => @build,
+      "root/opt/#{@name}/install.sh"   => @install,
+      "root/opt/#{@name}/uninstall.sh" => @uninstall,
+      "package.sh"                     => @package,
+      ".dockerignore"                  => @ignore
     }
 
     # If apps were specified, make a file for each one
     if !@apps.empty?
       @apps.each do |a|
-        files[a.name?] = a
+        files["root/usr/local/bin/#{a.name?}"] = a
       end
     else
-      # Otherwise, create the default run script
-      files["run.sh"] = @run
+      # Otherwise, create the default run and stop scripts
+      files["root/opt/#{@name}/run.sh"]  = @run
+      files["root/opt/#{@name}/stop.sh"] = @stop
+      files["root/etc/init.d/#{@name}"]  = @init
     end
 
     files.each_pair{|k, v| write(k, v)}
@@ -1211,10 +1230,12 @@ class Main
 
     # Parse apps first so the manager can create the proper run scripts
     # Parse environment variables next so they can be substituted into strings.
+    # The rest are just parsed alphabetically
     @commands = 
     [
      "app",          # Set the application to run
      "env",          # Specify an environment variable
+
      "copy",         # Copy a file from the host into the image
      "create",       # Create a file
      "cron",         # Specify a command to run every hour
