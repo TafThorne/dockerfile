@@ -693,6 +693,11 @@ class Run
     @seamless    = false
   end
 
+  # string (void)
+  def name?
+    return @app
+  end
+
   # void (string)
   def app(command)
     @app = command
@@ -735,6 +740,7 @@ class Run
 
   # void (bool)
   def seamless(enabled)
+    puts "Seamless mode active: #{@app}"
     @seamless = enabled
   end
 
@@ -1075,10 +1081,43 @@ class Manager
     @uninstall  = Uninstall.new
     @package    = Package.new
     @ignore     = Ignore.new
+
+    @apps = []
   end
 
+  # Forward a method call to the top-level classes
+  def forward(method, *args)
+    self.instance_variables.each do |v| 
+      if self.instance_variable_get(v).respond_to? method
+        self.instance_variable_get(v).send(method, *args) 
+      end
+    end
+  end
+
+  # Forward a method call to all classes
+  def forward_all(method, *args)
+    self.instance_variables.each do |v| 
+      if self.instance_variable_get(v).respond_to? method
+        self.instance_variable_get(v).send(method, *args) 
+      elsif self.instance_variable_get(v).class == Array
+        self.instance_variable_get(v).each do |a|
+          a.send(method, *args) if a.respond_to? method
+        end
+      end
+    end
+  end
+
+  # If the manager doesn't understand a method, forward it on
   def method_missing(method, *args, &block)
-    self.instance_variables.each{|v| self.instance_variable_get(v).send(method, *args, &block) if self.instance_variable_get(v).respond_to? method}
+    forward_all(method, *args)
+  end
+
+  # void (string)
+  def app(name)
+    run = Run.new
+    run.app name
+    @apps.push run
+    forward(:app, name)
   end
 
   # string (void)
@@ -1094,17 +1133,30 @@ class Manager
 
   # void (void)
   def create_files
+    files = 
     {
       "Dockerfile"    => @dockerfile,
       "build.sh"      => @build,
-      "run.sh"        => @run,
+      # "run.sh"        => @run,
       "stop.sh"       => @stop,
       "init.sh"       => @init,
       "install.sh"    => @install,
       "uninstall.sh"  => @uninstall,
       "package.sh"    => @package,
       ".dockerignore" => @ignore
-    }.each_pair{|k, v| write(k, v)}
+    }
+
+    # If apps were specified, make a file for each one
+    if !@apps.empty?
+      @apps.each do |a|
+        files[a.name?] = a
+      end
+    else
+      # Otherwise, create the default run script
+      files["run.sh"] = @run
+    end
+
+    files.each_pair{|k, v| write(k, v)}
   end
 
 end
@@ -1153,11 +1205,12 @@ class Main
 
   def initialize(argv)
 
-    # Parse environment variables first so they can be substituted into strings.
+    # Parse apps first so the manager can create the proper run scripts
+    # Parse environment variables next so they can be substituted into strings.
     @commands = 
     [
-     "env",          # Specify an environment variable
      "app",          # Set the application to run
+     "env",          # Specify an environment variable
      "copy",         # Copy a file from the host into the image
      "create",       # Create a file
      "cron",         # Specify a command to run every hour
