@@ -141,6 +141,7 @@ class Dockerfile
     @name       = File.basename(Dir.pwd)
     @network    = "bridge"
     @user       = "root"
+    @workdir    = ""
     @id         = `id -u`.chomp # 1000
     @app        = ""
     @gui        = false
@@ -186,7 +187,17 @@ class Dockerfile
 
     lines = []
 
+    # Build the run commands
     run_command = build_run_command
+
+    # Determine working directory
+    if !@workdir.empty?
+      workdir = @workdir
+    elsif @user == "root"
+      workdir = "/root"
+    else
+      workdir = "/home/#{@user}"
+    end
 
     lines.push "# #{@name} #{Time.now}"
     lines.push "FROM #{@from}"
@@ -201,6 +212,9 @@ class Dockerfile
     lines.push "# Copy files into the image"                                 if !@copies.empty?
     lines.push ""                                                            if !@copies.empty?
     lines += @copies
+    lines.push "# Set working directory"
+    lines.push "WORKDIR #{workdir}"
+    lines.push ""
     lines.push "# Run commands"                                              if !run_command.empty?
     lines.push run_command                                                   if !run_command.empty?
     lines.push ""                                                            if !run_command.empty?
@@ -230,12 +244,6 @@ class Dockerfile
   end
   
   ##############################################################################
-
-  # void (string, string)
-  def env(key, value)
-    @envs.add [key, value]
-    @environment_variables[key] = value
-  end
 
   # void (string)
   def app(command)
@@ -336,6 +344,12 @@ class Dockerfile
     @run_commands.push blank
   end
 
+  # void (string, string)
+  def env(key, value)
+    @envs.add [key, value]
+    @environment_variables[key] = value
+  end
+
   # void (int)
   def expose(port)
     @ports.add port
@@ -384,16 +398,6 @@ class Dockerfile
   def name(name)
     @name = name
   end
-
-  # void (string)
-  #def network(name)
-  #  throw "Not Implemented"
-  #end
-
-  # void (bool)
-  #def persistent(enabled)
-  #  throw "Not Implemented"
-  #end
 
   # void (string, string)
   def ppa(name, ppa = nil)
@@ -468,6 +472,11 @@ class Dockerfile
     @end_commands.push blank
     
     @volumes.add volume
+  end
+
+  # void (string)
+  def workdir(path)
+    @workdir = path
   end
 
   ##############################################################################
@@ -676,10 +685,12 @@ class Run
     @volumes = Set.new
 
     @user        = "root"
+    @workdir     = ""
     @app         = ""
     @interactive = false
     @gui         = false
     @persistent  = false
+    @seamless    = false
   end
 
   # void (string)
@@ -722,6 +733,11 @@ class Run
     @persistent = enabled
   end
 
+  # void (bool)
+  def seamless(enabled)
+    @seamless = enabled
+  end
+
   # void (string)
   def user(name)
     @user = name
@@ -730,6 +746,11 @@ class Run
   # void (string)
   def volume(volume)
     @volumes.add volume
+  end
+
+  # void (string)
+  def workdir(path)
+    @workdir = path
   end
 
   # string (void)
@@ -791,6 +812,12 @@ class Run
       user = "setuser #{@user}"
     end    
 
+    # If the app should be seamless with the host
+    seamless = ""
+    if @seamless
+      seamless = "-v `pwd`:`pwd` -w `pwd`"
+    end
+
     # Run in daemon mode unless there is an app
     daemon = @app.empty? ? "-d" : ""
 
@@ -798,7 +825,7 @@ class Run
     persistent = @persistent ? "" : "--rm"
 
     # Build the run command
-    command = "#{pipe}docker run -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{@name} /sbin/my_init --quiet -- #{user} #{app}".squash
+    command = "#{pipe}docker run -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{seamless} #{@name} /sbin/my_init --quiet -- #{user} #{app}".squash
 
     if @persistent
       s.push "# Determine if a container already exists"
@@ -1126,7 +1153,7 @@ class Main
 
   def initialize(argv)
 
-    # Always do environment variables first, so they can be substituted into strings
+    # Parse environment variables first so they can be substituted into strings.
     @commands = 
     [
      "env",          # Specify an environment variable
@@ -1152,9 +1179,11 @@ class Main
      "ppa",          # Add an Ubuntu PPA to the image
      "repository",   # Add repositories to the image
      "run",          # Add a run script to the image
+     "seamless",     # Mount the current directory and set as the working directory
      "startup",      # Define a startup script
      "user",         # Specify the user to create and use
-     "volume"        # Specify an external volume
+     "volume",       # Specify an external volume
+     "workdir"       # Specify the working directory 
     ]
 
   end
