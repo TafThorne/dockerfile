@@ -247,7 +247,11 @@ class Dockerfile
 
   # void (string)
   def app(command)
-    @app = command
+    if @app.empty?
+      @app = command
+    else
+      @app = "bash"
+    end
   end
 
   # void (string, string)
