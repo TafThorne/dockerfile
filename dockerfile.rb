@@ -951,6 +951,11 @@ class Install
 
   def initialize
     @name = File.basename(Dir.pwd)
+    @app = true
+  end
+
+  def app(name)
+    @app = true
   end
 
   def name(name)
@@ -958,16 +963,22 @@ class Install
   end
 
   def to_s
-    <<-EOF.deindent
-      #!/bin/bash
-      NAME=#{@name}
-      cd /opt/${NAME}
-      IMAGE=`ls ${NAME}_*.tgz`
-      VERSION=`echo ${IMAGE} | sed "s@${NAME}_\\(.*\\)\\.tar\\.bz2@\\1@"`
-      bunzip2 -c /opt/${NAME}/${IMAGE} | docker load
-      update-rc.d ${NAME} defaults
-      /etc/init.d/${NAME} start
-    EOF
+
+    lines = []
+
+    lines.push "#!/bin/bash"
+    lines.push "NAME=#{@name}"
+    lines.push "cd /opt/${NAME}"
+    lines.push "IMAGE=`ls /opt/${NAME}/${NAME}_*.tar.bz2`"
+    lines.push "bunzip2 -c ${IMAGE} | docker load"
+
+    lines.push "update-rc.d ${NAME} defaults" if !@app
+    lines.push "/etc/init.d/${NAME} start"    if !@app
+    
+    lines.push ""
+    
+    return lines.join "\n"
+
   end
 
 end
@@ -976,6 +987,11 @@ class Uninstall
 
   def initialize
     @name = File.basename(Dir.pwd)
+    @app = false
+  end
+
+  def app(name)
+    @app = true
   end
 
   def name(name)
@@ -983,13 +999,21 @@ class Uninstall
   end
 
   def to_s
-    <<-EOF.deindent
-      #!/bin/bash
-      NAME=#{@name}
-      /etc/init.d/${NAME} stop
-      update-rc.d -f ${NAME} remove
-      docker rmi ${NAME}
-    EOF
+
+    lines = []
+
+    lines.push "#!/bin/bash"
+    lines.push "NAME=#{@name}"
+
+    lines.push "/etc/init.d/${NAME} stop"      if !@app
+    lines.push "update-rc.d -f ${NAME} remove" if !@app
+
+    lines.push "docker rmi ${NAME} || true"
+
+    lines.push ""
+
+    return lines.join "\n"
+
   end
 
 end
