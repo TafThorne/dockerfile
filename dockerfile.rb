@@ -717,7 +717,7 @@ class Run
     @interactive = false
     @gui         = false
     @persistent  = false
-    @priviledged = false
+    @privileged  = false
     @seamless    = false
   end
 
@@ -767,8 +767,8 @@ class Run
   end
 
   # void (bool)
-  def priviledged(enabled)
-    @priviledged = enabled
+  def privileged(enabled)
+    @privileged = enabled
   end
 
   # void (bool)
@@ -863,11 +863,11 @@ class Run
     # Remove the container unless there is persistence
     persistent = @persistent ? "" : "--rm"
 
-    # Run with priviledged permissions
-    priviledged = @priviledged ? "--priviledged" : ""
+    # Run with privileged permissions
+    privileged = @privileged ? "--privileged" : ""
 
     # Build the run command
-    command = "#{pipe}docker run #{priviledged} -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{seamless} #{@name} /sbin/my_init --quiet -- #{user} #{app}".squash
+    command = "#{pipe}docker run #{privileged} -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{seamless} #{@name} /sbin/my_init --quiet -- #{user} #{app}".squash
 
     if @persistent
       s.push "# Determine if a container already exists"
@@ -1310,7 +1310,7 @@ class Main
      "network",      # Specify networks to join
      "persistent",   # Set to true to enable persistence between runs
      "ppa",          # Add an Ubuntu PPA to the image
-     "priviledged",  # Run the image with priviledged permissions
+     "privileged",   # Run the image with privileged permissions
      "repository",   # Add repositories to the image
      "run",          # Add a run script to the image
      "seamless",     # Mount the current directory and set as the working directory
