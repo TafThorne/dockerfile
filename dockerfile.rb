@@ -22,9 +22,25 @@ require "yaml"
 require "base64"
 require "digest"
 require "fileutils"
+require "zlib"
+require "stringio"
 
 # Patches
 class String
+
+  # string (void)
+  def gzip
+    io = StringIO.new("w")
+    gz = Zlib::GzipWriter.new(io)
+    gz.write(self)
+    gz.close
+    return io.string
+  end
+
+  # string (void)
+  def base64
+    return Base64.encode64(self)
+  end
 
   # string (void)
   def flatten
@@ -256,7 +272,8 @@ class Dockerfile
   end
 
   # void (string, string)
-  def copy(source, destination = "/")
+  def copy(source, destination = nil)
+    destination = destination ? destination : source
     @copies.push "# SHA256: #{Digest::SHA256.file(source.substitute(@environment_variables)).hexdigest}"
     @copies.push "COPY #{source} #{destination}"
     @copies.push ""
@@ -268,6 +285,7 @@ class Dockerfile
     @run_commands.push "mkdir -p #{File.dirname(file)}"
     @run_commands += contents.write_to file 
     @run_commands.push "chown #{@user}:#{@user} #{file}"
+    @run_commands.push "chmod 755 #{file}"
     @run_commands.push blank
   end
 
@@ -336,16 +354,20 @@ class Dockerfile
   end
 
   # void (string, string)
-  def embed(source, destination = "/")
+  def embed(source, destination = nil)
+    destination = destination ? destination : source
     @run_commands.push "Embedding #{source}".comment
     @run_commands.push "echo \\"
     
-    s = Base64.encode64(File.open("#{source}", "rb").read)
-    s.split("\n").each do |line|
+    s = File.open("#{source}", "rb").read
+    e = s.gzip.base64
+    e.split("\n").each do |line|
       @run_commands.push "#{line} \\"
     end
     
-    @run_commands.push "| tr -d ' ' | base64 -d > #{destination}"
+    @run_commands.push "| tr -d ' ' | base64 -d | gunzip > #{destination}"
+    @run_commands.push "chown #{@user}:#{@user} #{destination}"
+    @run_commands.push "chmod 755 #{destination}"
     @run_commands.push blank
   end
 
@@ -695,6 +717,7 @@ class Run
     @interactive = false
     @gui         = false
     @persistent  = false
+    @priviledged = false
     @seamless    = false
   end
 
@@ -741,6 +764,11 @@ class Run
   # void (bool)
   def persistent(enabled)
     @persistent = enabled
+  end
+
+  # void (bool)
+  def priviledged(enabled)
+    @priviledged = enabled
   end
 
   # void (bool)
@@ -835,8 +863,11 @@ class Run
     # Remove the container unless there is persistence
     persistent = @persistent ? "" : "--rm"
 
+    # Run with priviledged permissions
+    priviledged = @priviledged ? "--priviledged" : ""
+
     # Build the run command
-    command = "#{pipe}docker run -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{seamless} #{@name} /sbin/my_init --quiet -- #{user} #{app}".squash
+    command = "#{pipe}docker run #{priviledged} -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{seamless} #{@name} /sbin/my_init --quiet -- #{user} #{app}".squash
 
     if @persistent
       s.push "# Determine if a container already exists"
@@ -1279,6 +1310,7 @@ class Main
      "network",      # Specify networks to join
      "persistent",   # Set to true to enable persistence between runs
      "ppa",          # Add an Ubuntu PPA to the image
+     "priviledged",  # Run the image with priviledged permissions
      "repository",   # Add repositories to the image
      "run",          # Add a run script to the image
      "seamless",     # Mount the current directory and set as the working directory
