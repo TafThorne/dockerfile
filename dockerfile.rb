@@ -488,14 +488,19 @@ class Dockerfile
     @begin_commands.push "mkdir -p /home/#{user}"
     @begin_commands.push "chown -R #{user}:#{user} /home/#{user} /opt"
     @begin_commands.push blank
+
+    # If a user is specified, set the working directory
+    # unless it has already been set
+    workdir("/home/#{user}") if @workdir.empty?
   end
 
   # void (string)
   def volume(volume)
+    slash = volume.start_with?("/") ? "" : "/"
     @end_commands.push "Fixing permission errors for volume".comment
-    @end_commands.push "mkdir -p #{volume}"
-    @end_commands.push "chown -R #{@user}:#{@user} #{volume}"
-    @end_commands.push "chmod -R 700 #{volume}"
+    @end_commands.push "mkdir -p #{slash}#{volume}"
+    @end_commands.push "chown -R #{@user}:#{@user} #{slash}#{volume}"
+    @end_commands.push "chmod -R 700 #{slash}#{volume}"
     @end_commands.push blank
     
     @volumes.add volume
@@ -665,6 +670,7 @@ class Build
     s = []
 
     s.push "#!/bin/bash"
+    s.push "set -e" # TODO: use the on_exit technique for the server
     s.push ""
 
     s.push "# Stopping any existing container"
@@ -821,11 +827,17 @@ class Run
       s.push ""
 
       s.push "# Creating directories for hosting volumes"
-      volumes = "-v " + @volumes.collect{|v| "${HOST}/#{@name}#{v}:#{v}"}.join(" -v ")
-      s += @volumes.collect{|v| "mkdir -p ${HOST}/#{@name}#{v}"}
-      s += @volumes.collect{|v| "chown -R 1000:docker ${HOST}/#{@name}#{v}"}
-      s += @volumes.collect{|v| "chmod -R 775 ${HOST}/#{@name}#{v}"}
-      s.push ""
+      @volumes.each do |v|
+        slash = v.start_with?("/") ? "" : "/"
+        location = "${HOST}/#{@name}#{slash}#{v}"
+
+        s.push "mkdir -p #{location}"
+        s.push "chown -R 1000:docker #{location}"
+        s.push "chmod -R 775 #{location}"
+        s.push ""
+
+        volumes += "-v #{location}:#{slash}#{v} "
+      end
     end
 
     ports = ""
@@ -838,11 +850,13 @@ class Run
       app = @app
       pipe = ""
       tty = "-t"
+      args = "$@"
     else
       # Pipe app into bash
       app    = @app.empty? ? ""   : "/bin/bash"
       pipe   = @app.empty? ? ""   : "echo \"#{@app} $@\" | "
       tty    = @app.empty? ? "-t" : ""
+      args   = @app.empty? ? "$@" : ""
     end
 
     # If the app should be run as a specific user
@@ -867,7 +881,7 @@ class Run
     privileged = @privileged ? "--privileged" : ""
 
     # Build the run command
-    command = "#{pipe}docker run #{privileged} -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{seamless} #{@name} /sbin/my_init --quiet -- #{user} #{app}".squash
+    command = "#{pipe}docker run #{privileged} -i #{tty} #{persistent} #{daemon} --name #{@name} --net #{@network} #{ports} #{volumes} #{seamless} #{@name} /sbin/my_init --quiet -- #{user} #{app} #{args}".squash
 
     if @persistent
       s.push "# Determine if a container already exists"
@@ -1285,11 +1299,13 @@ class Main
 
     # Parse apps first so the manager can create the proper run scripts
     # Parse environment variables next so they can be substituted into strings.
+    # Parse user third so proper permissions are set
     # The rest are just parsed alphabetically
     @commands = 
     [
      "app",          # Set the application to run
      "env",          # Specify an environment variable
+     "user",         # Specify the user to create and use
 
      "copy",         # Copy a file from the host into the image
      "create",       # Create a file
@@ -1315,7 +1331,6 @@ class Main
      "run",          # Add a run script to the image
      "seamless",     # Mount the current directory and set as the working directory
      "startup",      # Define a startup script
-     "user",         # Specify the user to create and use
      "volume",       # Specify an external volume
      "workdir"       # Specify the working directory 
     ]
