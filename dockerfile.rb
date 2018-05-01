@@ -1300,8 +1300,6 @@ class Main
     @inputFileName = "Dockerfile.yml"
 
     # Handle any arguments
-    puts argv.length
-    puts argv.to_s
     if argv.length > 1
         puts "Error: 1 or 0 arguments expected."
         puts "Usage: dockerfile.rb [target-dockerfile.yml]"
@@ -1366,3 +1364,4 @@ if __FILE__ == $0
   main = Main.new(ARGV)
   main.run
 end
+
