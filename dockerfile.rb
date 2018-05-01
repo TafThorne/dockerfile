@@ -1296,6 +1296,20 @@ end
 class Main
 
   def initialize(argv)
+    # Defaults
+    @inputFileName = "Dockerfile.yml"
+
+    # Handle any arguments
+    puts argv.length
+    puts argv.to_s
+    if argv.length > 1
+        puts "Error: 1 or 0 arguments expected."
+        puts "Usage: dockerfile.rb [target-dockerfile.yml]"
+        throw "Too many arguments"
+    end
+    if argv.length == 1
+        @inputFileName = argv[0]
+    end
 
     # Parse apps first so the manager can create the proper run scripts
     # Parse environment variables next so they can be substituted into strings.
@@ -1338,7 +1352,7 @@ class Main
   end
 
   def run
-    yaml = YAML::load_file("Dockerfile.yml").downcase
+    yaml = YAML::load_file(@inputFileName).downcase
     manager = Manager.new
     parser = Parser.new(yaml, manager)
     @commands.each{|command| parser.parse(command)}

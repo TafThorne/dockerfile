@@ -8,6 +8,10 @@ Generated Dockerfiles are all based on [Phusion's Base Image](https://github.com
 To generate a Dockerfile, simply run the following command from any directory containing `Dockerfile.yml`:
 
     dockerfile.rb
+
+Optionally you can put the name of a target .yml file on the command line:
+
+    dockerfile.rb Dockerfile.someOtherFile.yml
     
 The generated Dockerfile will be output to stdout. To save it as a Dockerfile:
 
